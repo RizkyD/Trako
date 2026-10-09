@@ -2,6 +2,13 @@ import { redirect } from 'remix/response/redirect'
 import { createController } from 'remix/router'
 
 import { assets } from '../assets.ts'
+import {
+  backupSettings,
+  folderProblem,
+  listBackups,
+  saveBackupSettings,
+  writeBackup,
+} from '../backup.ts'
 import { coverResponse, deleteCover, fetchCover, saveCover } from '../covers.ts'
 import {
   addTags,
@@ -14,6 +21,7 @@ import {
   deleteFranchise,
   deleteItem,
   deleteItems,
+  endSessions,
   getItem,
   getUser,
   hasUser,
@@ -24,6 +32,7 @@ import {
   randomItem,
   renameFranchise,
   replayItem,
+  sessionVersion,
   setAvatar,
   setFavorite,
   setFranchise,
@@ -39,6 +48,7 @@ import {
 } from '../db.ts'
 import { fromCsv, fromMal, fromSteam } from '../importers.ts'
 import { lookup } from '../lookup.ts'
+import { signInFailed, signInSucceeded, signInWait } from '../rate-limit.ts'
 import { routes } from '../routes.ts'
 import { exportData, importData, importItems } from '../transfer.ts'
 import {
@@ -112,9 +122,14 @@ export default createController(routes, {
     },
 
     login(context) {
+      let notice = context.session.get('notice')
       let error = context.session.get('error')
       return context.render(
-        <LoginPage setup={!hasUser()} error={typeof error === 'string' ? error : undefined} />,
+        <LoginPage
+          setup={!hasUser()}
+          notice={typeof notice === 'string' ? notice : undefined}
+          error={typeof error === 'string' ? error : undefined}
+        />,
       )
     },
     loginSubmit(context) {
@@ -125,18 +140,31 @@ export default createController(routes, {
         return redirect(routes.login.href())
       }
 
+      // Too many wrong passwords from this address or for this username: the
+      // password is not even checked.
+      let wait = signInWait(context.request, username)
+      if (wait) {
+        let error = `Too many attempts. Try again in ${wait} ${wait === 1 ? 'minute' : 'minutes'}.`
+        return context.render(<LoginPage setup={false} error={error} />, { status: 429 })
+      }
+
       let userId: number | null
       if (hasUser()) {
         userId = verifyUser(username, password)
-        if (userId === null) return fail('Wrong username or password')
+        if (userId === null) {
+          signInFailed(context.request, username)
+          return fail('Wrong username or password')
+        }
       } else {
         // First run: the first submission creates the one account.
         if (!username || password.length < 8) return fail('Password must be at least 8 characters')
         userId = createUser(username, password)
       }
 
+      signInSucceeded(context.request, username)
       context.session.regenerateId()
       context.session.set('userId', userId)
+      context.session.set('version', sessionVersion(userId))
       return home()
     },
     logout(context) {
@@ -317,14 +345,18 @@ export default createController(routes, {
       return context.render(<StatsPage user={userOf(context)} items={listItems()} />)
     },
 
-    settings(context) {
+    async settings(context) {
       let notice = context.session.get('notice')
       let error = context.session.get('error')
+      let backup = backupSettings()
+      // A folder that went missing simply shows no backups.
+      let files = backup.folder ? await listBackups(backup.folder).catch(() => []) : []
       return context.render(
         <SettingsPage
           items={listItems()}
           franchises={listFranchises()}
           user={userOf(context)}
+          backup={{ ...backup, files }}
           notice={typeof notice === 'string' ? notice : undefined}
           error={typeof error === 'string' ? error : undefined}
         />,
@@ -365,20 +397,63 @@ export default createController(routes, {
     passwordChange(context) {
       let field = (name: string) => String(context.formData.get(name) ?? '')
       let next = field('new_password')
+      let userId = Number(context.session.get('userId'))
       let error: string | undefined
       if (next.length < 8) {
         error = 'The new password must be at least 8 characters.'
       } else if (next !== field('confirm_password')) {
         error = 'The new password and its confirmation do not match.'
-      } else if (!changePassword(Number(context.session.get('userId')), field('current_password'), next)) {
+      } else if (!changePassword(userId, field('current_password'), next)) {
         error = 'The current password is wrong. Nothing was changed.'
       }
 
       if (error) {
         context.session.flash('error', error)
       } else {
+        // The change signed out every session; this one carries on.
         context.session.regenerateId()
-        context.session.flash('notice', 'Password changed.')
+        context.session.set('version', sessionVersion(userId))
+        context.session.flash('notice', 'Password changed. Other browsers and devices are signed out.')
+      }
+      return redirect(routes.settings.href())
+    },
+    signOutEverywhere(context) {
+      endSessions(Number(context.session.get('userId')))
+      // This session ends too: emptied rather than destroyed, so it can carry the notice.
+      context.session.unset('userId')
+      context.session.unset('version')
+      context.session.regenerateId()
+      context.session.flash('notice', 'Signed out everywhere, this browser included.')
+      return redirect(routes.login.href())
+    },
+    // Saves the backup folder and how many to keep; "Back up now" also writes
+    // today's backup at once. An empty folder turns automatic backups off.
+    async backups(context) {
+      let folder = String(context.formData.get('folder') ?? '').trim()
+      let keep = Number(context.formData.get('keep'))
+      let now = context.formData.has('now')
+      let error: string | null = null
+      if (!Number.isInteger(keep) || keep < 1) {
+        error = 'Keep at least 1 backup.'
+      } else if (now && !folder) {
+        error = 'Type the backup folder first.'
+      } else if (folder) {
+        error = await folderProblem(folder)
+      }
+      if (error) {
+        context.session.flash('error', error)
+        return redirect(routes.settings.href())
+      }
+
+      saveBackupSettings(folder, keep)
+      if (!now) {
+        context.session.flash('notice', folder ? 'Backup settings saved.' : 'Automatic backups are off.')
+      } else {
+        try {
+          context.session.flash('notice', `Backed up to ${await writeBackup(folder, keep)}`)
+        } catch (failure) {
+          context.session.flash('error', `The backup failed: ${(failure as Error).message}`)
+        }
       }
       return redirect(routes.settings.href())
     },

@@ -170,9 +170,9 @@ function Brand() {
   )
 }
 
-export function LoginPage(handle: Handle<{ setup: boolean; error?: string }>) {
+export function LoginPage(handle: Handle<{ setup: boolean; notice?: string; error?: string }>) {
   return () => {
-    let { setup, error } = handle.props
+    let { setup, notice, error } = handle.props
     return (
       <Document title={`Sign in — ${APP}`}>
         <main class="auth">
@@ -186,6 +186,7 @@ export function LoginPage(handle: Handle<{ setup: boolean; error?: string }>) {
                 ? 'No account yet. Create the first one to get started.'
                 : 'Pick up where you left off.'}
             </p>
+            {notice && <p role="status">{notice}</p>}
             {error && <p role="alert">{error}</p>}
             <form method="post" action={routes.loginSubmit.href()} class="fields">
               <label class="wide">
@@ -1246,12 +1247,15 @@ export function SettingsPage(
     user: User
     items: Item[]
     franchises: Franchise[]
+    // The backup folder ('' when off), how many to keep, and the backups in it, oldest first.
+    backup: { folder: string; keep: number; files: string[] }
     notice?: string
     error?: string
   }>,
 ) {
   return () => {
-    let { user, items, franchises, notice, error } = handle.props
+    let { user, items, franchises, backup, notice, error } = handle.props
+    let lastBackup = backup.files.at(-1)
     // The imports from other services can put every title they add in a
     // franchise, an existing one or a new one.
     let franchiseField = () => (
@@ -1380,6 +1384,19 @@ export function SettingsPage(
           </section>
 
           <section class="panel stack">
+            <h2>Sessions</h2>
+            <p class="muted">
+              Signs this account out in every browser and on every device, this one included.
+              Changing the password signs out all but this browser.
+            </p>
+            <form method="post" action={routes.signOutEverywhere.href()} data-rmx-document>
+              <button type="submit" class="danger">
+                Sign out everywhere
+              </button>
+            </form>
+          </section>
+
+          <section class="panel stack">
             <h2>Export</h2>
             <p class="muted">
               Downloads one JSON file with every title, franchise, rating, note and cover image.
@@ -1391,6 +1408,40 @@ export function SettingsPage(
                 Export {items.length} {items.length === 1 ? 'title' : 'titles'}
               </a>
             </div>
+          </section>
+
+          <section class="panel stack">
+            <h2>Backups</h2>
+            <p class="muted">
+              While Trako runs, it saves the export file into this folder once a day as
+              trako-YYYY-MM-DD.json, and deletes the oldest beyond the number kept. Leave the
+              folder empty to turn this off.
+            </p>
+            <form method="post" action={routes.backups.href()} class="stack" data-rmx-document>
+              <label>
+                Folder <span class="muted">(full path, like D:\Backups\Trako)</span>
+                <input name="folder" value={backup.folder} autocomplete="off" spellcheck={false} />
+              </label>
+              <label>
+                Keep last
+                <input name="keep" type="number" min={1} value={backup.keep} required />
+              </label>
+              {backup.folder && (
+                <p class="muted">
+                  {lastBackup
+                    ? `Last backup: ${dateFormat.format(new Date(lastBackup.slice(6, 16)))} (${backup.files.length} ${backup.files.length === 1 ? 'file' : 'files'})`
+                    : 'No backups in this folder yet.'}
+                </p>
+              )}
+              <div class="actions split">
+                <button type="submit" name="now" value="on">
+                  Back up now
+                </button>
+                <button type="submit" class="primary">
+                  Save
+                </button>
+              </div>
+            </form>
           </section>
 
           <section class="panel stack">

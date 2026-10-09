@@ -1,6 +1,12 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import * as assert from 'remix/assert'
 import { describe, it } from 'remix/test'
 
+import { resetPassword, today } from '../db.ts'
+import { clientAddress } from '../rate-limit.ts'
 import { router } from '../router.ts'
 import { routes } from '../routes.ts'
 
@@ -1109,5 +1115,137 @@ describe('tracker', () => {
     page = await send(routes.importSteam.href(), { key: 'KEY123', steam_id: '76561197960287930' })
     assert.match(page, /Steam returned no games\. Check the key and the SteamID/)
     assert.deepEqual((await titles()).length, 6)
+  })
+
+  it('signs other sessions out on a password change, and every session on request', async () => {
+    // As above: the account the first flow leaves behind, or a new one when run alone.
+    let signIn = async (password = 'baru-sekali-9') =>
+      cookieOf(await post(routes.loginSubmit.href(), { username: 'aku', password }))
+    let home = (cookie: string) => get(routes.home.href(), cookie)
+    let phone = await signIn()
+    let laptop = await signIn()
+    assert.equal((await home(phone)).status, 200)
+    assert.equal((await home(laptop)).status, 200)
+
+    // The browser the password is changed in stays signed in; the others are signed out.
+    let changed = await post(
+      routes.passwordChange.href(),
+      { current_password: 'baru-sekali-9', new_password: 'ganti-lagi-77', confirm_password: 'ganti-lagi-77' },
+      laptop,
+    )
+    laptop = cookieOf(changed) || laptop
+    assert.match(await (await get(routes.settings.href(), laptop)).text(), /Password changed\. Other browsers/)
+    assert.equal((await home(laptop)).status, 200)
+    assert.equal((await home(phone)).headers.get('Location'), routes.login.href())
+    phone = await signIn('ganti-lagi-77')
+    assert.equal((await home(phone)).status, 200)
+
+    // Signing out everywhere ends every session, its own too, and says so on the sign-in page.
+    let settings = await (await get(routes.settings.href(), laptop)).text()
+    assert.match(settings, /action="\/settings\/sign-out-everywhere"/)
+    let out = await post(routes.signOutEverywhere.href(), {}, laptop)
+    assert.equal(out.headers.get('Location'), routes.login.href())
+    assert.match(await (await get(routes.login.href(), cookieOf(out))).text(), /role="status">Signed out everywhere/)
+    for (let cookie of [laptop, phone, cookieOf(out)]) {
+      assert.equal((await home(cookie)).headers.get('Location'), routes.login.href())
+    }
+    assert.equal((await home(await signIn('ganti-lagi-77'))).status, 200)
+    // Back to the password the other tests sign in with.
+    resetPassword('aku', 'baru-sekali-9')
+  })
+
+  it('resets a forgotten password, signing every session out', async () => {
+    let cookie = cookieOf(await post(routes.loginSubmit.href(), { username: 'aku', password: 'baru-sekali-9' }))
+    assert.equal((await get(routes.home.href(), cookie)).status, 200)
+
+    assert.equal(resetPassword('nobody', 'lupa-semua-1'), false)
+    assert.equal(resetPassword('aku', 'lupa-semua-1'), true)
+    assert.equal((await get(routes.home.href(), cookie)).headers.get('Location'), routes.login.href())
+    let old = await post(routes.loginSubmit.href(), { username: 'aku', password: 'baru-sekali-9' })
+    assert.equal(old.headers.get('Location'), routes.login.href())
+    let fresh = await post(routes.loginSubmit.href(), { username: 'aku', password: 'lupa-semua-1' })
+    assert.equal(fresh.headers.get('Location'), routes.home.href())
+    assert.equal((await get(routes.home.href(), cookieOf(fresh))).status, 200)
+    resetPassword('aku', 'baru-sekali-9')
+  })
+
+  it('saves the backup folder and backs up on request', async (t) => {
+    let cookie = cookieOf(await post(routes.loginSubmit.href(), { username: 'aku', password: 'baru-sekali-9' }))
+    let folder = mkdtempSync(join(tmpdir(), 'trako-backups-'))
+    t.after(() => rmSync(folder, { recursive: true, force: true }))
+    let save = async (fields: Record<string, string>) => {
+      let response = await post(routes.backups.href(), fields, cookie)
+      cookie = cookieOf(response) || cookie
+      return (await get(routes.settings.href(), cookie)).text()
+    }
+
+    // Bad folders and counts are refused, and nothing is saved.
+    assert.match(await save({ folder: 'backups', keep: '14' }), /must be a full path/)
+    assert.match(await save({ folder: join(folder, 'missing'), keep: '14' }), /does not exist/)
+    assert.match(await save({ folder, keep: '0' }), /Keep at least 1 backup/)
+    let refused = await save({ folder: '', keep: '14', now: 'on' })
+    assert.match(refused, /Type the backup folder first/)
+    assert.match(refused, /name="folder"[^>]*value=""/)
+
+    let saved = await save({ folder, keep: '3' })
+    assert.match(saved, /Backup settings saved/)
+    assert.ok(saved.includes(`value="${folder}"`))
+    assert.match(saved, /name="keep"[^>]*value="3"/)
+    assert.match(saved, /No backups in this folder yet/)
+
+    // Back up now writes today's file and says where.
+    let backedUp = await save({ folder, keep: '3', now: 'on' })
+    let file = join(folder, `trako-${today()}.json`)
+    assert.ok(backedUp.includes(`Backed up to ${file}`))
+    assert.match(backedUp, /Last backup: [^<]+ \(1 file\)/)
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).app, 'trako')
+
+    // An empty folder turns automatic backups off.
+    assert.match(await save({ folder: '', keep: '3' }), /Automatic backups are off/)
+  })
+
+  it('limits failed sign-ins per username and per client address', async (t) => {
+    let signIn = (username: string, password: string, address?: string) => {
+      let request = new Request(origin + routes.loginSubmit.href(), {
+        method: 'POST',
+        body: new URLSearchParams({ username, password }),
+        redirect: 'manual',
+      })
+      if (address) clientAddress.set(request, address)
+      return router.fetch(request)
+    }
+    let signedIn = (response: Response) => response.headers.get('Location') === routes.home.href()
+    let fail = async (count: number, username: string, address?: string) => {
+      for (let i = 0; i < count; i++) {
+        let response = await signIn(username, 'salah-salah', address)
+        assert.equal(response.headers.get('Location'), routes.login.href())
+      }
+    }
+    // Signing in clears what earlier tests left.
+    assert.ok(signedIn(await signIn('aku', 'baru-sekali-9')))
+
+    // Nine wrong passwords, then the right one: signed in, and the count starts over,
+    // so ten more wrong ones are still answered as usual.
+    await fail(9, 'aku')
+    assert.ok(signedIn(await signIn('aku', 'baru-sekali-9')))
+    await fail(10, 'aku')
+    // Then even the right password is refused, on the sign-in page.
+    let blocked = await signIn('aku', 'baru-sekali-9')
+    assert.equal(blocked.status, 429)
+    let page = await blocked.text()
+    assert.match(page, /role="alert">Too many attempts\. Try again in 15 minutes\./)
+    assert.match(page, /action="\/login"/)
+    // Another username is not affected.
+    await fail(1, 'someone')
+
+    // Ten failures from one address block that address, for any username.
+    for (let i = 0; i < 10; i++) await fail(1, `guess${i}`, '203.0.113.9')
+    assert.equal((await signIn('other', 'x', '203.0.113.9')).status, 429)
+    await fail(1, 'other', '198.51.100.7')
+
+    // Fifteen minutes later, signing in works again.
+    let now = Date.now()
+    t.mock.method(Date, 'now', () => now + 15 * 60_000)
+    assert.ok(signedIn(await signIn('aku', 'baru-sekali-9', '203.0.113.9')))
   })
 })

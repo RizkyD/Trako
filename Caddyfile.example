@@ -1,0 +1,7 @@
+# Trako behind Caddy, which gets and renews the HTTPS certificate by itself.
+# Copy to Caddyfile, put in your domain (its DNS must point at this machine,
+# ports 80 and 443 open), and run Trako with TRUST_PROXY=1 and HOST=127.0.0.1
+# (see "HTTPS and access from the internet" in README.md).
+trako.example.com {
+	reverse_proxy localhost:44100
+}

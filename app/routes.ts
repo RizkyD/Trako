@@ -26,6 +26,8 @@ export const routes = route({
   avatarChange: post('/settings/avatar'),
   usernameChange: post('/settings/username'),
   passwordChange: post('/settings/password'),
+  signOutEverywhere: post('/settings/sign-out-everywhere'),
+  backups: post('/settings/backups'),
   export: get('/export'),
   import: post('/import'),
   importMal: post('/import/mal'),

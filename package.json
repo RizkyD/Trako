@@ -6,6 +6,7 @@
     "dev": "NODE_ENV=development node --watch --import remix/node-tsx server.ts",
     "hmr": "NODE_ENV=development node hmr.ts",
     "start": "NODE_ENV=production node --import remix/node-tsx server.ts",
+    "reset-password": "node --import remix/node-tsx scripts/reset-password.ts",
     "test": "NODE_ENV=test remix test",
     "typecheck": "tsc --noEmit"
   },

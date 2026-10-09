@@ -89,7 +89,8 @@ db.exec(`
     id INTEGER PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
     password TEXT NOT NULL,
-    avatar TEXT
+    avatar TEXT,
+    session_version INTEGER NOT NULL DEFAULT 1
   );
   CREATE TABLE IF NOT EXISTS franchises (
     id INTEGER PRIMARY KEY,
@@ -154,9 +155,13 @@ for (let name of ['released', 'platforms', 'description']) {
   }
 }
 
-// Profile photos came later than accounts.
-if (!columnsOf('users').includes('avatar')) {
+// Profile photos came later than accounts, and so did session versions.
+const userColumns = columnsOf('users')
+if (!userColumns.includes('avatar')) {
   db.exec('ALTER TABLE users ADD COLUMN avatar TEXT')
+}
+if (!userColumns.includes('session_version')) {
+  db.exec('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1')
 }
 
 // Signing secret for the session cookie, generated once and kept with the data.
@@ -216,14 +221,42 @@ export function changeUsername(userId: number, password: string, username: strin
   return true
 }
 
-// Returns false, changing nothing, when the current password is wrong.
+// A session holds its account's version from sign-in; it is only valid while
+// they match, so bumping the version signs out every session at once.
+export function sessionVersion(userId: number): number | undefined {
+  let user = db.prepare('SELECT session_version FROM users WHERE id = ?').get(userId) as
+    | { session_version: number }
+    | undefined
+  return user?.session_version
+}
+
+export function endSessions(userId: number): void {
+  db.prepare('UPDATE users SET session_version = session_version + 1 WHERE id = ?').run(userId)
+}
+
+// Returns false, changing nothing, when the current password is wrong. Other
+// sessions are signed out; the caller gives its own the new version.
 export function changePassword(userId: number, current: string, next: string): boolean {
   let user = db.prepare('SELECT password FROM users WHERE id = ?').get(userId) as
     | { password: string }
     | undefined
   if (!user || !passwordMatches(user.password, current)) return false
-  db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashPassword(next), userId)
+  db.prepare(
+    'UPDATE users SET password = ?, session_version = session_version + 1 WHERE id = ?',
+  ).run(hashPassword(next), userId)
   return true
+}
+
+// For a forgotten password (scripts/reset-password.ts): no current password
+// needed, and every session is signed out. False when there is no such account.
+export function resetPassword(username: string, password: string): boolean {
+  return (
+    db
+      .prepare(
+        'UPDATE users SET password = ?, session_version = session_version + 1 WHERE username = ?',
+      )
+      .run(hashPassword(password), username).changes > 0
+  )
 }
 
 export function listFranchises(): Franchise[] {

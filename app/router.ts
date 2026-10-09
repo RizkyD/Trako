@@ -10,7 +10,7 @@ import { createCookieSessionStorage } from 'remix/session-storage/cookie'
 
 import controller from './actions/controller.tsx'
 import { assets } from './assets.ts'
-import { sessionSecret } from './db.ts'
+import { sessionSecret, sessionVersion } from './db.ts'
 import { routes } from './routes.ts'
 
 const renderMiddleware = render({ assets })
@@ -50,13 +50,18 @@ const uploadLimit: Middleware = async (_context, next) => {
   }
 }
 
-// Everything except the login page and browser assets needs a logged-in session.
+// Everything except the login page and browser assets needs a logged-in session,
+// signed in since the account last signed out everywhere or changed its password.
 const requireLogin: Middleware = (context, next) => {
   let { pathname } = context.url
-  let isPublic = pathname === routes.login.href() || pathname.startsWith('/assets/')
-  if (isPublic || (context as unknown as AppContext).session.get('userId') !== undefined) {
-    return next()
-  }
+  if (pathname === routes.login.href() || pathname.startsWith('/assets/')) return next()
+  let { session } = context as unknown as AppContext
+  let userId = session.get('userId')
+  if (userId === undefined) return redirect(routes.login.href())
+  let version = session.get('version')
+  if (version !== undefined && version === sessionVersion(Number(userId))) return next()
+  // An outdated session is signed out.
+  session.destroy()
   return redirect(routes.login.href())
 }
 

@@ -26,7 +26,11 @@ Refer to ./.agents/skills/remix/SKILL.md for the Remix mental model and how to f
 - Put top-level route actions in `app/actions/controller.tsx`; add `app/actions/<route-key>/controller.tsx` for nested route maps. `app/actions/controller.test.ts` is the root controller's router smoke test
 - `app/actions/pages.tsx` and `app/actions/document.tsx` render the Trako UI (sign in, titles, edit, franchises, stats); UI text is English
 - `app/db.ts` owns the SQLite schema (`node:sqlite`, file `data/tracker.db`), its migrations, password hashing, and item/franchise queries
-- Settings page (`/settings`): theme picker (`app/actions/public/theme-toggle.tsx` + `public/theme.js`), export, import, and imports from MyAnimeList, CSV files and Steam
+- Sessions hold the account's `session_version` from sign-in; `requireLogin` in `app/router.ts` signs out a session whose version is outdated (password change, reset, "Sign out everywhere")
+- `app/rate-limit.ts` counts failed sign-ins in memory, per username and per client address (`server.ts` notes each request's address in `clientAddress`)
+- Settings page (`/settings`): theme picker (`app/actions/public/theme-toggle.tsx` + `public/theme.js`), sign out everywhere, export, backups, import, and imports from MyAnimeList, CSV files and Steam
+- `app/backup.ts` writes daily backups (the export file) to the folder set in Settings (`meta` keys `backup_dir`, `backup_keep`); `server.ts` runs `backupIfDue` at start-up and hourly
+- `scripts/`: `reset-password.ts` (`npm run reset-password -- <username>`), and `install-service.ps1` / `uninstall-service.ps1` / `service.cmd` for the Windows scheduled task (see README)
 - `app/transfer.ts` exports and imports the whole list as one JSON file (covers embedded); `importItems` loads titles from other services through the same checks
 - `app/importers.ts` turns MyAnimeList exports, CSV files and Steam libraries into titles for `importItems`
 - `app/lookup.ts` looks titles up on Wikipedia and AniList for the add and edit forms' "Fetch details" button (`app/actions/public/title-lookup.tsx`, route `/lookup`)
