@@ -2,7 +2,7 @@ import { redirect } from 'remix/response/redirect'
 import { createController } from 'remix/router'
 
 import { assets } from '../assets.ts'
-import { coverResponse, deleteCover, saveCover } from '../covers.ts'
+import { coverResponse, deleteCover, fetchCover, saveCover } from '../covers.ts'
 import {
   addTags,
   advanceItem,
@@ -32,12 +32,15 @@ import {
   STATUSES,
   toggleFavorite,
   toggleItem,
+  TYPES,
   updateItem,
   verifyUser,
   type Item,
 } from '../db.ts'
+import { fromCsv, fromMal, fromSteam } from '../importers.ts'
+import { lookup } from '../lookup.ts'
 import { routes } from '../routes.ts'
-import { exportData, importData } from '../transfer.ts'
+import { exportData, importData, importItems } from '../transfer.ts'
 import {
   EditPage,
   FranchisesPage,
@@ -56,6 +59,48 @@ const userOf = (context: { session: { get(key: string): unknown } }) =>
   getUser(Number(context.session.get('userId')))
 const badRequest = () => new Response('Invalid data', { status: 400 })
 const notFound = () => new Response('Not found', { status: 404 })
+
+interface FormContext {
+  formData: FormData
+  session: { flash(key: string, value: string): void }
+}
+
+// The cover picked with "Fetch details", for a form that uploaded none. A failed
+// download only loses the cover; the list then says so.
+async function fetchedCover(context: FormContext): Promise<string | null> {
+  let address = String(context.formData.get('cover_url') ?? '')
+  let cover = address ? await fetchCover(address) : null
+  if (address && !cover) context.session.flash('notice', 'Saved, but the cover could not be fetched.')
+  return cover
+}
+
+const importedNotice = (result: { added: number; skipped: number }) =>
+  `Imported ${result.added} titles${result.skipped ? `, skipped ${result.skipped} already in your list` : ''}.`
+
+// The end of an import from another service: the franchise typed in its form
+// goes to every title that names none of its own; entries that are not valid
+// titles are listed (CSV rows by number).
+async function importOther(context: FormContext, entries: Record<string, unknown>[]) {
+  let franchise = String(context.formData.get('franchise') ?? '').trim() || null
+  let result = await importItems(entries.map((entry) => ({ franchise, ...entry })))
+  context.session.flash('notice', importedNotice(result))
+  if (result.invalid.length) {
+    let which = result.invalid.map((index) =>
+      entries[index].row ? `row ${entries[index].row}` : `entry ${index + 1}`,
+    )
+    let more = which.length > 10 ? ` and ${which.length - 10} more` : ''
+    context.session.flash(
+      'error',
+      `Not imported, as a value is missing or not valid: ${which.slice(0, 10).join(', ')}${more}.`,
+    )
+  }
+  return redirect(routes.settings.href())
+}
+
+function importFailed(context: FormContext, message: string) {
+  context.session.flash('error', `${message} Nothing was changed.`)
+  return redirect(routes.settings.href())
+}
 
 export default createController(routes, {
   actions: {
@@ -174,8 +219,18 @@ export default createController(routes, {
         if (cover) await deleteCover(cover)
         return badRequest()
       }
-      createItem(item, cover)
+      createItem(item, cover ?? (await fetchedCover(context)))
       return home()
+    },
+    // Details for the add and edit forms, from Wikipedia and AniList.
+    async lookupTitle(context) {
+      let query = context.url.searchParams.get('q')?.trim() ?? ''
+      let type = context.url.searchParams.get('type') as Item['type']
+      if (!query || !TYPES.includes(type)) return badRequest()
+      let candidates = await lookup(query, type)
+      return candidates
+        ? Response.json(candidates)
+        : Response.json({ error: 'Lookup failed' }, { status: 502 })
     },
     itemEdit(context) {
       let item = getItem(context.params.id)
@@ -200,7 +255,9 @@ export default createController(routes, {
         return badRequest()
       }
 
-      let cover = uploaded ?? (context.formData.has('remove_cover') ? null : existing.cover)
+      let cover = context.formData.has('remove_cover')
+        ? uploaded
+        : (uploaded ?? (await fetchedCover(context)) ?? existing.cover)
       updateItem(context.params.id, item, cover)
       if (cover !== existing.cover) await deleteCover(existing.cover)
       return home()
@@ -266,6 +323,7 @@ export default createController(routes, {
       return context.render(
         <SettingsPage
           items={listItems()}
+          franchises={listFranchises()}
           user={userOf(context)}
           notice={typeof notice === 'string' ? notice : undefined}
           error={typeof error === 'string' ? error : undefined}
@@ -340,12 +398,36 @@ export default createController(routes, {
           ? await importData(await file.text(), context.formData.has('replace'))
           : null
       if (result) {
-        let skipped = result.skipped ? `, skipped ${result.skipped} already in your list` : ''
-        context.session.flash('notice', `Imported ${result.added} titles${skipped}.`)
+        context.session.flash('notice', importedNotice(result))
       } else {
         context.session.flash('error', 'That is not a valid Trako export file. Nothing was changed.')
       }
       return redirect(routes.settings.href())
+    },
+    async importMal(context) {
+      let file = context.formData.get('file')
+      let entries =
+        file instanceof File && file.size > 0 ? fromMal(new Uint8Array(await file.arrayBuffer())) : null
+      if (!entries) return importFailed(context, 'That is not a MyAnimeList export file.')
+      return importOther(context, entries)
+    },
+    async importCsv(context) {
+      let file = context.formData.get('file')
+      let type = String(context.formData.get('type') ?? '')
+      let entries = file instanceof File && file.size > 0 ? fromCsv(await file.text(), type) : null
+      if (!entries) return importFailed(context, 'That CSV file has no title column.')
+      return importOther(context, entries)
+    },
+    async importSteam(context) {
+      let field = (name: string) => String(context.formData.get(name) ?? '').trim()
+      let entries = await fromSteam(field('key'), field('steam_id'))
+      if (!entries) {
+        return importFailed(
+          context,
+          'Steam returned no games. Check the key and the SteamID, and that the profile’s game details are public.',
+        )
+      }
+      return importOther(context, entries)
     },
   },
 })

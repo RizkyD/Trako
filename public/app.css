@@ -1283,6 +1283,10 @@ button.danger:hover {
   background: var(--danger);
   border-color: var(--ink);
 }
+button:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -1432,6 +1436,70 @@ input[type='file']::file-selector-button {
 .combo li.none {
   color: var(--muted);
   cursor: default;
+}
+
+/* Fetch details: the button beside the title field, the matches below it */
+.lookup > div {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.35rem;
+}
+.lookup > div input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+.lookup > div button {
+  flex: none;
+}
+.lookup ul {
+  margin-top: 0.5rem;
+  padding: 0.3rem;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+}
+.lookup li button {
+  display: block;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  white-space: normal;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+}
+.lookup li button,
+.lookup li button:is(:hover, :active) {
+  box-shadow: none;
+  transform: none;
+}
+.lookup li button:hover {
+  color: var(--ink);
+  background: var(--sun);
+}
+.lookup li small {
+  margin-left: 0.5rem;
+}
+.lookup p {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+.lookup .picked {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 800;
+}
+.lookup .picked img {
+  width: 2.2rem;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border: 2px solid var(--ink);
+  border-radius: 6px;
+}
+p.muted a {
+  text-decoration: underline;
 }
 
 /* Edit and franchise pages */

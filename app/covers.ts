@@ -4,6 +4,7 @@ import { readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { dataDir } from './db.ts'
+import { USER_AGENT } from './lookup.ts'
 
 const MIME: Record<string, string> = {
   jpg: 'image/jpeg',
@@ -33,6 +34,63 @@ export async function saveCover(value: FormDataEntryValue | null): Promise<strin
   if (!(value instanceof File) || value.size === 0) return null
   let extension = Object.keys(MIME).find((key) => MIME[key] === value.type) ?? ''
   return (await writeCover(new Uint8Array(await value.arrayBuffer()), extension)) ?? false
+}
+
+// The only hosts covers are downloaded from: Wikipedia's and AniList's image
+// servers (where "Fetch details" finds them) and Steam's.
+const COVER_HOSTS = [
+  'upload.wikimedia.org',
+  'thumb.wikimedia.org',
+  's4.anilist.co',
+  'img.anili.st',
+  'cdn.cloudflare.steamstatic.com',
+]
+
+// Downloads an image from one of COVER_HOSTS over https, checking every redirect
+// before following it, reading no more than COVER_MAX_BYTES, within 10 seconds.
+// Returns null on any failure.
+export async function downloadImage(
+  address: string,
+): Promise<{ bytes: Uint8Array; extension: string } | null> {
+  try {
+    let signal = AbortSignal.timeout(10_000)
+    let url = new URL(address)
+    for (let hops = 0; hops < 5; hops++) {
+      if (url.protocol !== 'https:' || !COVER_HOSTS.includes(url.host)) return null
+      let response = await fetch(url, { headers: { 'User-Agent': USER_AGENT }, redirect: 'manual', signal })
+      let location = response.headers.get('Location')
+      if (response.status >= 300 && response.status < 400 && location) {
+        url = new URL(location, url)
+        continue
+      }
+      let type = response.headers.get('Content-Type')?.split(';')[0].trim()
+      let extension = Object.keys(MIME).find((key) => MIME[key] === type)
+      if (!response.ok || !response.body || !extension) return null
+      if (Number(response.headers.get('Content-Length')) > COVER_MAX_BYTES) return null
+      // The length can be missing or wrong: count while reading, too.
+      let reader = response.body.getReader()
+      let chunks: Uint8Array[] = []
+      for (let size = 0; ; ) {
+        let chunk = await reader.read()
+        if (chunk.done) return { bytes: Buffer.concat(chunks), extension }
+        size += chunk.value.byteLength
+        if (size > COVER_MAX_BYTES) {
+          await reader.cancel()
+          return null
+        }
+        chunks.push(chunk.value)
+      }
+    }
+  } catch {
+    // Not a URL, unreachable, timed out: no cover.
+  }
+  return null
+}
+
+// Downloads a cover and stores it. Returns null when that fails.
+export async function fetchCover(address: string): Promise<string | null> {
+  let image = await downloadImage(address)
+  return image && writeCover(image.bytes, image.extension)
 }
 
 export async function deleteCover(name: string | null): Promise<void> {

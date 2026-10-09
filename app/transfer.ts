@@ -1,4 +1,4 @@
-import { deleteCover, readCover, writeCover } from './covers.ts'
+import { deleteCover, downloadImage, readCover, writeCover } from './covers.ts'
 import {
   createFranchise,
   createItem,
@@ -159,11 +159,10 @@ export async function importData(
   }
 
   for (let name of franchises) createFranchise(name)
-  let exists = db.prepare('SELECT 1 FROM items WHERE title = ? COLLATE NOCASE AND type = ?')
   let franchiseId = db.prepare('SELECT id FROM franchises WHERE name = ?')
   let added = 0
   for (let entry of entries as ExportedItem[]) {
-    if (exists.get(entry.title, entry.type)) continue
+    if (inTheList(entry)) continue
     if (entry.franchise) createFranchise(entry.franchise)
     let franchise = entry.franchise
       ? (franchiseId.get(entry.franchise) as { id: number } | undefined)
@@ -176,4 +175,38 @@ export async function importData(
     added++
   }
   return { added, skipped: entries.length - added }
+}
+
+// A title already in the list: the same title, in any case, and type.
+const inTheList = (entry: ExportedItem) =>
+  db
+    .prepare('SELECT 1 FROM items WHERE title = ? COLLATE NOCASE AND type = ?')
+    .get(entry.title, entry.type) !== undefined
+
+// Loads titles from another service (MyAnimeList, a CSV file, Steam), given in
+// the export file's item shape, each optionally with a `cover_url` to download
+// its cover from. Each goes through importData on its own, so the same checks
+// apply and only one downloaded cover is held at a time; a title already in the
+// list is skipped before its cover is downloaded. Entries that are not valid
+// titles are left out and returned by position.
+// ponytail: covers download one after another; fetch a few at once if large
+// Steam libraries take too long.
+export async function importItems(
+  items: Record<string, unknown>[],
+): Promise<{ added: number; skipped: number; invalid: number[] }> {
+  let result = { added: 0, skipped: 0, invalid: [] as number[] }
+  for (let [index, item] of items.entries()) {
+    let entry = parseExported(item)
+    if (!entry) {
+      result.invalid.push(index)
+    } else if (inTheList(entry)) {
+      result.skipped++
+    } else {
+      let image = typeof item.cover_url === 'string' ? await downloadImage(item.cover_url) : null
+      let cover = image && { extension: image.extension, data: Buffer.from(image.bytes).toString('base64') }
+      let file = JSON.stringify({ app: 'trako', items: [{ ...item, cover }] })
+      result.added += (await importData(file, false))?.added ?? 0
+    }
+  }
+  return result
 }

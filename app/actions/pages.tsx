@@ -18,6 +18,7 @@ import { FranchiseSelect } from './public/franchise-select.tsx'
 import { ListFilters } from './public/list-filters.tsx'
 import { SearchBox } from './public/search-box.tsx'
 import { ThemePicker } from './public/theme-toggle.tsx'
+import { TitleLookup } from './public/title-lookup.tsx'
 
 const APP = 'Trako'
 const STATUS_LABEL = {
@@ -1241,10 +1242,24 @@ export function StatsPage(handle: Handle<{ user: User; items: Item[] }>) {
 }
 
 export function SettingsPage(
-  handle: Handle<{ user: User; items: Item[]; notice?: string; error?: string }>,
+  handle: Handle<{
+    user: User
+    items: Item[]
+    franchises: Franchise[]
+    notice?: string
+    error?: string
+  }>,
 ) {
   return () => {
-    let { user, items, notice, error } = handle.props
+    let { user, items, franchises, notice, error } = handle.props
+    // The imports from other services can put every title they add in a
+    // franchise, an existing one or a new one.
+    let franchiseField = () => (
+      <label>
+        Franchise <span class="muted">(optional · for every title it adds)</span>
+        <input name="franchise" list="franchise-names" autocomplete="off" />
+      </label>
+    )
     return (
       <Document title={`Settings — ${APP}`}>
         <Shell user={user} items={items} filter={{}} active="settings">
@@ -1401,6 +1416,120 @@ export function SettingsPage(
                 <button type="button" class="danger" popovertarget="confirm-replace">
                   Replace everything…
                 </button>
+                <button type="submit" class="primary">
+                  Import
+                </button>
+              </div>
+            </form>
+          </section>
+
+          {/* Other services: these only add, skipping titles already in the list. */}
+          <datalist id="franchise-names">
+            {franchises.map((franchise) => (
+              <option key={franchise.id} value={franchise.name} />
+            ))}
+          </datalist>
+          <section class="panel stack">
+            <h2>Import from MyAnimeList</h2>
+            <p class="muted">
+              Loads an anime or manga list from MyAnimeList’s export file (.xml.gz as downloaded, or
+              unpacked): statuses, scores, progress, dates, notes and tags. Titles already in your
+              list are skipped.
+            </p>
+            <form
+              method="post"
+              action={routes.importMal.href()}
+              enctype="multipart/form-data"
+              class="stack"
+              data-rmx-document
+            >
+              <label>
+                Export file
+                <input
+                  name="file"
+                  type="file"
+                  accept=".xml,.gz,application/xml,text/xml,application/gzip"
+                  required
+                />
+              </label>
+              {franchiseField()}
+              <div>
+                <button type="submit" class="primary">
+                  Import
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel stack">
+            <h2>Import a CSV file</h2>
+            <p class="muted">
+              A spreadsheet saved as CSV, its first row naming the columns: title (required), type,
+              status, franchise, released, platforms, rating, progress, progress_total,
+              progress_unit, started_at, finished_at, note, description, tags. Other columns are
+              ignored. Dates are written 2024-01-31; a title without a status is planned. Titles
+              already in your list are skipped.
+            </p>
+            <form
+              method="post"
+              action={routes.importCsv.href()}
+              enctype="multipart/form-data"
+              class="stack"
+              data-rmx-document
+            >
+              <label>
+                CSV file
+                <input name="file" type="file" accept=".csv,text/csv" required />
+              </label>
+              <label>
+                Type <span class="muted">(for rows without one)</span>
+                <select name="type">
+                  <option value="">None: every row names its type</option>
+                  {TYPES.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {franchiseField()}
+              <div>
+                <button type="submit" class="primary">
+                  Import
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel stack">
+            <h2>Import from Steam</h2>
+            <p class="muted">
+              Adds the games a Steam account owns, with hours played as progress and their covers.
+              It needs a{' '}
+              <a href="https://steamcommunity.com/dev/apikey" target="_blank" rel="noopener">
+                Steam Web API key
+              </a>{' '}
+              and the account’s SteamID64, and the profile’s game details must be public. Both are
+              used for this one request and not stored. A large library takes a while.
+            </p>
+            <form method="post" action={routes.importSteam.href()} class="stack" data-rmx-document>
+              <label>
+                Steam Web API key
+                <input name="key" type="password" autocomplete="off" required />
+              </label>
+              <label>
+                SteamID64 <span class="muted">(17 digits)</span>
+                <input
+                  name="steam_id"
+                  inputmode="numeric"
+                  pattern="\d{17}"
+                  title="The 17-digit SteamID64"
+                  autocomplete="off"
+                  required
+                />
+              </label>
+              {franchiseField()}
+              <div>
                 <button type="submit" class="primary">
                   Import
                 </button>
@@ -1600,10 +1729,10 @@ function ItemFields(handle: Handle<{ item?: Item; franchises: Franchise[]; tags:
     let { item, franchises, tags } = handle.props
     return (
       <>
-        <label class="wide">
-          Title
-          <input name="title" value={item?.title} required />
-        </label>
+        <div class="wide">
+          <label for="title">Title</label>
+          <TitleLookup id="title" value={item?.title ?? ''} href={routes.lookupTitle.href()} />
+        </div>
         <label>
           Type
           <select name="type">

@@ -868,4 +868,246 @@ describe('tracker', () => {
     let list = await (await get('/?type=manga&q=x', cookieOf(none))).text()
     assert.match(list, /<p role="alert">Nothing left to pick\.<\/p>/)
   })
+
+  it('looks titles up and downloads the covers picked, from allowed hosts only', async (t) => {
+    // As above: the account the first flow leaves behind, or a new one when run alone.
+    let cookie = cookieOf(await post(routes.loginSubmit.href(), { username: 'aku', password: 'baru-sekali-9' }))
+    let send = async (path: string, fields: Record<string, string | File>) => {
+      let response = await post(path, fields, cookie)
+      cookie = cookieOf(response) || cookie
+      return response
+    }
+    let backup = (items: object[]) => new File([JSON.stringify({ app: 'trako', items })], 'b.json')
+    await send(routes.import.href(), { file: backup([]), replace: 'on' })
+    let exported = async (): Promise<{ title: string; cover: { extension: string; data: string } | null }[]> =>
+      JSON.parse(await (await get(routes.export.href(), cookie)).text()).items
+    let coverOf = async (title: string) => (await exported()).find((item) => item.title === title)?.cover ?? null
+
+    // Every request to the outside comes here instead: nothing reaches the network.
+    let requested: string[] = []
+    let png = () => new Response(new Uint8Array([137, 80, 78, 71]), { headers: { 'Content-Type': 'image/png' } })
+    let replies: Record<string, () => Response> = {
+      'https://upload.wikimedia.org/cover.png': png,
+      'https://s4.anilist.co/moved.png': () =>
+        new Response(null, { status: 302, headers: { Location: 'https://upload.wikimedia.org/cover.png' } }),
+      'https://s4.anilist.co/away.png': () =>
+        new Response(null, { status: 302, headers: { Location: 'https://evil.example/cover.png' } }),
+      'https://upload.wikimedia.org/page.png': () => new Response('<html>', { headers: { 'Content-Type': 'text/html' } }),
+      // Over 5 MB, as its length says, or only as it streams in.
+      'https://upload.wikimedia.org/big.png': () =>
+        new Response(new Uint8Array(1), {
+          headers: { 'Content-Type': 'image/png', 'Content-Length': String(6 * 1024 * 1024) },
+        }),
+      'https://upload.wikimedia.org/endless.png': () => {
+        let body = new ReadableStream({
+          pull(controller) {
+            if (streamed++ < 100) controller.enqueue(new Uint8Array(1024 * 1024))
+            else controller.close()
+          },
+        })
+        return new Response(body, { headers: { 'Content-Type': 'image/png' } })
+      },
+    }
+    // Megabytes of that last one handed out.
+    let streamed = 0
+    let wikipedia = () =>
+      Response.json({
+        query: {
+          pages: [
+            {
+              title: 'Celeste (video game)',
+              index: 1,
+              extract: 'Celeste is a 2018 platform video game.',
+              thumbnail: { source: 'https://thumb.wikimedia.org/celeste.png' },
+              revisions: [{ slots: { main: { content: '{{Infobox video game\n| released = 2018\n| platforms = [[Windows]], [[Linux]]\n}}' } } }],
+            },
+          ],
+        },
+      })
+    t.mock.method(globalThis, 'fetch', async (input: string | URL) => {
+      let url = String(input)
+      requested.push(url)
+      if (url.startsWith('https://en.wikipedia.org/w/api.php?')) return wikipedia()
+      return replies[url]?.() ?? new Response('Not Found', { status: 404 })
+    })
+
+    // The lookup answers signed-in requests with the matches as JSON.
+    assert.equal((await get(routes.lookupTitle.href() + '?q=Celeste&type=game')).headers.get('Location'), routes.login.href())
+    assert.equal((await get(routes.lookupTitle.href() + '?q=%20&type=game', cookie)).status, 400)
+    assert.equal((await get(routes.lookupTitle.href() + '?q=Celeste&type=book', cookie)).status, 400)
+    let found = await get(routes.lookupTitle.href() + '?q=Celeste&type=game', cookie)
+    assert.match(found.headers.get('Content-Type') ?? '', /^application\/json/)
+    assert.deepEqual(await found.json(), [
+      {
+        source: 'wikipedia',
+        title: 'Celeste (video game)',
+        released: '2018',
+        platforms: 'Windows, Linux',
+        description: 'Celeste is a 2018 platform video game.',
+        cover_url: 'https://thumb.wikimedia.org/celeste.png',
+        progress_total: null,
+        progress_unit: null,
+        tags: null,
+      },
+    ])
+    wikipedia = () => new Response('Too many requests', { status: 429 })
+    let failed = await get(routes.lookupTitle.href() + '?q=Celeste&type=game', cookie)
+    assert.equal(failed.status, 502)
+    assert.deepEqual(await failed.json(), { error: 'Lookup failed' })
+
+    // The add form's title field knows the lookup's address; its button needs
+    // JavaScript, so the page as served has none.
+    let addForm = await (await get(routes.home.href(), cookie)).text()
+    assert.match(addForm, /"href":"\/lookup"/)
+    assert.match(addForm, /<input id="title" name="title"[^>]*required/)
+    assert.doesNotMatch(addForm, /Fetch details/)
+
+    // A picked cover is downloaded when the title is saved, redirects included.
+    let add = (title: string, coverUrl: string) =>
+      send(routes.itemCreate.href(), { title, type: 'game', status: 'planned', cover_url: coverUrl })
+    assert.equal((await add('Celeste', 'https://upload.wikimedia.org/cover.png')).status, 302)
+    let stored = await coverOf('Celeste')
+    assert.deepEqual(stored, { extension: 'png', data: 'iVBORw==' })
+    await add('Moved', 'https://s4.anilist.co/moved.png')
+    assert.deepEqual(await coverOf('Moved'), stored)
+
+    // Anything else saves the title without a cover, and says so.
+    for (let [title, coverUrl] of [
+      ['Elsewhere', 'https://evil.example/cover.png'],
+      ['Plain http', 'http://upload.wikimedia.org/cover.png'],
+      ['Local', 'https://localhost/cover.png'],
+      ['Redirected away', 'https://s4.anilist.co/away.png'],
+      ['Not an image', 'https://upload.wikimedia.org/page.png'],
+      ['Said too big', 'https://upload.wikimedia.org/big.png'],
+      ['Too big', 'https://upload.wikimedia.org/endless.png'],
+      ['Missing', 'https://upload.wikimedia.org/missing.png'],
+      ['Not a URL', 'cover.png'],
+    ]) {
+      assert.equal((await add(title, coverUrl)).status, 302, title)
+      assert.equal(await coverOf(title), null, title)
+      assert.match(await (await get(routes.home.href(), cookie)).text(), /Saved, but the cover could not be fetched\./, title)
+    }
+    // Reading stopped soon after the size limit, not at the end of the 100 MB.
+    assert.ok(streamed <= 8, `read ${streamed} MB`)
+    // Hosts off the list are never contacted, not even through a redirect.
+    assert.deepEqual(requested.filter((url) => !/^https:\/\/(upload\.wikimedia\.org|s4\.anilist\.co|en\.wikipedia\.org)\//.test(url)), [])
+
+    // Editing: a picked cover replaces the current one, but not an uploaded file
+    // or a ticked "Remove the current cover".
+    let idOf = async (title: string) =>
+      /href="\/items\/(\d+)"/.exec(await (await get(routes.home.href() + `?q=${title}`, cookie)).text())?.[1] ?? ''
+    let id = await idOf('Elsewhere')
+    let edit = (fields: Record<string, string | File>) =>
+      send(routes.itemUpdate.href({ id }), { title: 'Elsewhere', type: 'game', status: 'planned', ...fields })
+    await edit({ cover_url: 'https://upload.wikimedia.org/cover.png' })
+    assert.deepEqual(await coverOf('Elsewhere'), stored)
+    let gif = new File([new Uint8Array([71, 73, 70])], 'up.gif', { type: 'image/gif' })
+    let before = requested.length
+    await edit({ cover: gif, cover_url: 'https://upload.wikimedia.org/cover.png' })
+    assert.deepEqual(await coverOf('Elsewhere'), { extension: 'gif', data: 'R0lG' })
+    await edit({ remove_cover: 'on', cover_url: 'https://upload.wikimedia.org/cover.png' })
+    assert.equal(await coverOf('Elsewhere'), null)
+    assert.equal(requested.length, before)
+    // Without a picked cover, the current one stays.
+    await edit({ cover_url: 'https://upload.wikimedia.org/cover.png' })
+    await edit({})
+    assert.deepEqual(await coverOf('Elsewhere'), stored)
+  })
+
+  it('imports from MyAnimeList, CSV files and Steam', async (t) => {
+    // As above: the account the first flow leaves behind, or a new one when run alone.
+    let cookie = cookieOf(await post(routes.loginSubmit.href(), { username: 'aku', password: 'baru-sekali-9' }))
+    let send = async (path: string, fields: Record<string, string | File>) => {
+      let response = await post(path, fields, cookie)
+      cookie = cookieOf(response) || cookie
+      return (await get(routes.settings.href(), cookie)).text()
+    }
+    await send(routes.import.href(), {
+      file: new File([JSON.stringify({ app: 'trako', items: [] })], 'b.json'),
+      replace: 'on',
+    })
+    let exported = async (): Promise<Record<string, unknown>[]> =>
+      JSON.parse(await (await get(routes.export.href(), cookie)).text()).items
+    let titles = async () => (await exported()).map((item) => item.title)
+    let file = (text: string, name: string) => new File([text], name)
+
+    let settings = await (await get(routes.settings.href(), cookie)).text()
+    for (let action of ['/import/mal', '/import/csv', '/import/steam']) assert.match(settings, new RegExp(`action="${action}"`))
+
+    // MyAnimeList: every title goes into the franchise typed, made if need be.
+    let mal = `<myanimelist>
+      <anime><series_title><![CDATA[Mushishi]]></series_title><series_type>TV</series_type>
+        <series_episodes>26</series_episodes><my_watched_episodes>26</my_watched_episodes>
+        <my_finish_date>2020-02-02</my_finish_date><my_score>9</my_score><my_status>Completed</my_status></anime>
+      <manga><manga_title><![CDATA[Blame!]]></manga_title><manga_chapters>0</manga_chapters>
+        <my_read_chapters>12</my_read_chapters><my_score>0</my_score><my_status>Reading</my_status></manga>
+      <manga><manga_title><![CDATA[Odd]]></manga_title><my_status>Rereading</my_status></manga>
+    </myanimelist>`
+    let page = await send(routes.importMal.href(), { file: file(mal, 'animelist.xml'), franchise: 'From MAL' })
+    assert.match(page, /<p role="status">Imported 2 titles\.<\/p>/)
+    assert.match(page, /<p role="alert">Not imported, as a value is missing or not valid: entry 3\.<\/p>/)
+    assert.deepEqual(
+      (await exported()).map((item) => [item.title, item.type, item.status, item.franchise, item.rating, item.finished_at, item.progress]),
+      [
+        ['Blame!', 'manga', 'ongoing', 'From MAL', null, null, 12],
+        ['Mushishi', 'anime', 'finished', 'From MAL', 9, '2020-02-02', 26],
+      ],
+    )
+    page = await send(routes.importMal.href(), { file: file(mal, 'animelist.xml') })
+    assert.match(page, /Imported 0 titles, skipped 2 already in your list\./)
+    page = await send(routes.importMal.href(), { file: file('{"app": "trako"}', 'x.json') })
+    assert.match(page, /That is not a MyAnimeList export file\. Nothing was changed\./)
+
+    // CSV: a row's own franchise and type beat the form's; bad rows are named.
+    let csv = 'title,type,franchise,rating\r\nHades,,,10\r\n"Ys I, Chronicles",,Ys,\r\nSecret,,,12\r\n'
+    page = await send(routes.importCsv.href(), { file: file(csv, 'list.csv'), type: 'game', franchise: 'Indie' })
+    assert.match(page, /Imported 2 titles\./)
+    assert.match(page, /Not imported, as a value is missing or not valid: row 4\./)
+    let rows = (await exported()).filter((item) => item.type === 'game')
+    assert.deepEqual(rows.map((item) => [item.title, item.franchise, item.rating, item.status]), [
+      ['Hades', 'Indie', 10, 'planned'],
+      ['Ys I, Chronicles', 'Ys', null, 'planned'],
+    ])
+    page = await send(routes.importCsv.href(), { file: file('name\nHades', 'list.csv'), type: 'game' })
+    assert.match(page, /That CSV file has no title column\. Nothing was changed\./)
+
+    // Steam: owned games with their playtime and cover, when the CDN has one.
+    let requested: string[] = []
+    let steam = () =>
+      Response.json({
+        response: {
+          games: [
+            { appid: 504230, name: 'Celeste', playtime_forever: 600 },
+            { appid: 1145360, name: 'Hades', playtime_forever: 90 },
+            { appid: 7, name: 'Unboxed', playtime_forever: 0 },
+          ],
+        },
+      })
+    t.mock.method(globalThis, 'fetch', async (input: string | URL) => {
+      let url = String(input)
+      requested.push(url)
+      if (url.startsWith('https://api.steampowered.com/')) return steam()
+      if (url.includes('/504230/')) return new Response(new Uint8Array([255, 216, 255]), { headers: { 'Content-Type': 'image/jpeg' } })
+      return new Response('Not Found', { status: 404 })
+    })
+    page = await send(routes.importSteam.href(), { key: 'KEY123', steam_id: '76561197960287930', franchise: '' })
+    assert.match(page, /Imported 2 titles, skipped 1 already in your list\./)
+    assert.match(new URL(requested[0]).search, /key=KEY123&steamid=76561197960287930/)
+    // Hades was in the list already, so its cover was not even asked for.
+    assert.deepEqual(requested.slice(1), [
+      'https://cdn.cloudflare.steamstatic.com/steam/apps/504230/library_600x900.jpg',
+      'https://cdn.cloudflare.steamstatic.com/steam/apps/7/library_600x900.jpg',
+    ])
+    let games = Object.fromEntries((await exported()).map((item) => [item.title, item]))
+    assert.deepEqual(
+      [games.Celeste.status, games.Celeste.progress, games.Celeste.progress_unit, games.Celeste.platforms, games.Celeste.cover],
+      ['ongoing', 10, 'hours', 'Steam', { extension: 'jpg', data: '/9j/' }],
+    )
+    assert.deepEqual([games.Unboxed.status, games.Unboxed.cover], ['planned', null])
+    assert.doesNotMatch(await (await get(routes.settings.href(), cookie)).text(), /KEY123/)
+    steam = () => Response.json({ response: {} })
+    page = await send(routes.importSteam.href(), { key: 'KEY123', steam_id: '76561197960287930' })
+    assert.match(page, /Steam returned no games\. Check the key and the SteamID/)
+    assert.deepEqual((await titles()).length, 6)
+  })
 })

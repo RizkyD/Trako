@@ -28,4 +28,8 @@ export const routes = route({
   passwordChange: post('/settings/password'),
   export: get('/export'),
   import: post('/import'),
+  importMal: post('/import/mal'),
+  importCsv: post('/import/csv'),
+  importSteam: post('/import/steam'),
+  lookupTitle: get('/lookup'),
 })
