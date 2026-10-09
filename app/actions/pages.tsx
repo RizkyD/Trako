@@ -1,6 +1,6 @@
 import { Fragment, unsafeHTML, type Handle, type RemixNode } from 'remix/component'
 
-import { COVER_ACCEPT } from '../covers.ts'
+import { COVER_ACCEPT, COVER_MAX_BYTES } from '../covers.ts'
 import {
   inList,
   splitList,
@@ -15,6 +15,7 @@ import { markdown } from '../markdown.ts'
 import { routes } from '../routes.ts'
 import { Document } from './document.tsx'
 import { FranchiseSelect } from './public/franchise-select.tsx'
+import { ImageInput } from './public/image-input.tsx'
 import { ListFilters } from './public/list-filters.tsx'
 import { SearchBox } from './public/search-box.tsx'
 import { ThemePicker } from './public/theme-toggle.tsx'
@@ -1300,7 +1301,13 @@ export function SettingsPage(
               <div class="stack">
                 <label>
                   Photo <span class="muted">(JPG, PNG, WebP, GIF · max 5 MB)</span>
-                  <input name="avatar" type="file" accept={COVER_ACCEPT} required />
+                  <ImageInput
+                    name="avatar"
+                    accept={COVER_ACCEPT}
+                    maxSide={512}
+                    maxBytes={COVER_MAX_BYTES}
+                    required
+                  />
                 </label>
                 <div class="actions split bare">
                   {user.avatar ? (
@@ -1897,7 +1904,7 @@ function ItemFields(handle: Handle<{ item?: Item; franchises: Franchise[]; tags:
         </label>
         <label class="wide">
           Cover <span class="muted">(optional · JPG, PNG, WebP, GIF · max 5 MB)</span>
-          <input name="cover" type="file" accept={COVER_ACCEPT} />
+          <ImageInput name="cover" accept={COVER_ACCEPT} maxSide={1000} maxBytes={COVER_MAX_BYTES} />
         </label>
         {item?.cover && (
           <label class="wide check">

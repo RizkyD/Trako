@@ -22,6 +22,10 @@ const app = run({
   },
 })
 
+// Fonts, styles and icons are kept by a service worker (public/sw.js). Browsers
+// only run one over https:// or on localhost; over plain http there is none.
+navigator.serviceWorker?.register('/sw.js')
+
 // Close open dialogs before an in-app navigation re-renders the page. Otherwise
 // an open popover element can be reused for the next page's content and stay
 // floating in the top layer (e.g. after confirming a delete).

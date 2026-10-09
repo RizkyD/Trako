@@ -34,9 +34,9 @@ Refer to ./.agents/skills/remix/SKILL.md for the Remix mental model and how to f
 - `app/transfer.ts` exports and imports the whole list as one JSON file (covers embedded); `importItems` loads titles from other services through the same checks
 - `app/importers.ts` turns MyAnimeList exports, CSV files and Steam libraries into titles for `importItems`
 - `app/lookup.ts` looks titles up on Wikipedia and AniList for the add and edit forms' "Fetch details" button (`app/actions/public/title-lookup.tsx`, route `/lookup`)
-- `app/covers.ts` stores uploaded cover images in `data/covers/` and serves them through the `covers` route; it also downloads picked covers, only from an allowlist of image hosts
+- `app/covers.ts` stores uploaded cover images in `data/covers/` and serves them through the `covers` route; it also downloads picked covers, only from an allowlist of image hosts. The cover and profile-photo inputs (`app/actions/public/image-input.tsx`) shrink pictures in the browser before uploading them
 - `app/actions/public/` contains the browser runtime entry
 - `app/assets.ts` owns the server-side asset pipeline used by the asset route and render middleware
-- Root `public/` contains static files served unchanged from the app root
+- Root `public/` contains static files served unchanged from the app root: `app.css` and `theme.js` (pages link them with `?v=<mtime>`), the self-hosted fonts in `fonts/` (see `fonts/LICENSE.txt`), the web app manifest and icons, and `sw.js`, a service worker that serves fonts, styles, icons and the manifest from its cache. Fonts and icons are cached for a year, so a changed one needs a new file name; bump `VERSION` in `sw.js` when the manifest changes
 
 This starter intentionally begins small; add directories like `app/data/`, `app/middleware/`, `app/ui/`, and `test/` only when you need them.

@@ -20,7 +20,9 @@ mkdirSync(dir, { recursive: true })
 
 // Stores cover bytes under a generated name. Returns null when the extension is
 // not an accepted image type or the image is over the size limit.
-// ponytail: files are stored as given; resize on upload if the grid gets slow.
+// ponytail: files are stored as given. The upload forms shrink pictures in the
+// browser first (actions/public/image-input.tsx); downloaded and imported covers
+// are not shrunk: resize here if the grid gets slow.
 export async function writeCover(bytes: Uint8Array, extension: string): Promise<string | null> {
   if (!(extension in MIME) || bytes.byteLength > COVER_MAX_BYTES) return null
   let name = `${randomUUID()}.${extension}`

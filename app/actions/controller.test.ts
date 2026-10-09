@@ -192,7 +192,9 @@ describe('tracker', () => {
     )
     assert.equal(unknown.status, 400)
 
-    // An item in that franchise, with an uploaded cover.
+    // An item in that franchise, with an uploaded cover. The forms' file inputs
+    // are plain ones until the browser shrinks pictures (image-input.tsx), so
+    // posting the file as is stands for a browser without JavaScript.
     let png = new File([new Uint8Array([137, 80, 78, 71])], 'cover.png', { type: 'image/png' })
     await post(
       routes.itemCreate.href(),
@@ -200,6 +202,7 @@ describe('tracker', () => {
       cookie,
     )
     let withCover = await (await get(routes.home.href() + '?franchise=1', cookie)).text()
+    assert.match(withCover, /<input name="cover" type="file"/)
     assert.match(withCover, /Persona 5/)
     assert.doesNotMatch(withCover, /Celeste/)
     let coverPath = /src="(\/covers\/[^"]+)"/.exec(withCover)?.[1]
@@ -317,6 +320,7 @@ describe('tracker', () => {
       return dataPage()
     }
     assert.doesNotMatch(await dataPage(), /<img[^>]*class="avatar"/)
+    assert.match(await dataPage(), /<input name="avatar" type="file"[^>]*required/)
     let notImage = new File(['x'], 'a.txt', { type: 'text/plain' })
     assert.match(await photo({ avatar: notImage }), /Choose a JPG, PNG, WebP or GIF/)
     assert.match(await photo({ avatar: png }), /Profile photo updated/)
@@ -1247,5 +1251,36 @@ describe('tracker', () => {
     let now = Date.now()
     t.mock.method(Date, 'now', () => now + 15 * 60_000)
     assert.ok(signedIn(await signIn('aku', 'baru-sekali-9', '203.0.113.9')))
+  })
+
+  it('serves its own fonts, icons, web app manifest and service worker', async () => {
+    let served = async (path: string, type: string) => {
+      let response = await get(path)
+      assert.equal(response.status, 200, path)
+      assert.equal(response.headers.get('Content-Type')?.split(';')[0], type, path)
+      return response
+    }
+
+    // No Google Fonts: the fonts pages preload and app.css names are all served here.
+    let page = await (await get(routes.login.href())).text()
+    assert.doesNotMatch(page, /googleapis|gstatic/)
+    let preloads = [...page.matchAll(/<link rel="preload" href="([^"]+)" as="font"/g)]
+    assert.equal(preloads.length, 2)
+    for (let [, href] of preloads) await served(href, 'font/woff2')
+    let css = /<link rel="stylesheet" href="(\/app\.css\?v=\w+)"/.exec(page)?.[1] ?? ''
+    let fonts = [...(await (await served(css, 'text/css')).text()).matchAll(/url\('([^']+)'\)/g)]
+    assert.equal(fonts.length, 14)
+    for (let [, href] of fonts) await served(href, 'font/woff2')
+    // Fonts and icons are kept for a year; everything else is checked each time.
+    assert.match((await get(fonts[0][1])).headers.get('Cache-Control') ?? '', /immutable/)
+    assert.equal((await get(css)).headers.get('Cache-Control'), 'no-cache')
+
+    // The manifest and its icons, and the service worker the pages register.
+    assert.match(page, /<link rel="manifest" href="\/manifest\.webmanifest"/)
+    let manifest = await (await served('/manifest.webmanifest', 'application/manifest+json')).json()
+    assert.deepEqual([manifest.name, manifest.start_url, manifest.display], ['Trako', '/', 'standalone'])
+    for (let icon of manifest.icons) await served(icon.src, 'image/png')
+    assert.equal(manifest.icons.length, 3)
+    await served('/sw.js', 'text/javascript')
   })
 })

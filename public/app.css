@@ -1,5 +1,107 @@
 /* Trako: manga-panel look. Ink outlines, hard offset shadows, halftone dots,
    candy accents; a night palette with the same shapes for dark mode. */
+
+/* Fonts, served from /fonts (SIL Open Font License, see fonts/LICENSE.txt). Per
+   weight, from Google Fonts: the Latin subset, for M PLUS Rounded 1c also the
+   Latin Extended one (ū, ō in romanized titles; Mochiy Pop One has no such letters,
+   so they come from M PLUS there too), and a tiny subset with the other characters
+   the interface uses where the font has them (←↑→↓≥☀★♥✓ and トラコ: the css2 URL
+   with &text=). Other scripts, such as Japanese titles, show in the system font.
+   Browsers keep these files for good: a changed font needs a new file name. */
+@font-face {
+  font-family: 'M PLUS Rounded 1c';
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/m-plus-rounded-1c-400-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'M PLUS Rounded 1c';
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/m-plus-rounded-1c-400-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'M PLUS Rounded 1c';
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/m-plus-rounded-1c-400-ui.woff2') format('woff2');
+  unicode-range: U+2190-2193, U+2265, U+2600, U+2605, U+2665, U+2713, U+30B3, U+30C8, U+30E9;
+}
+@font-face {
+  font-family: 'M PLUS Rounded 1c';
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/m-plus-rounded-1c-500-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'M PLUS Rounded 1c';
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/m-plus-rounded-1c-500-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'M PLUS Rounded 1c';
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/m-plus-rounded-1c-500-ui.woff2') format('woff2');
+  unicode-range: U+2190-2193, U+2265, U+2600, U+2605, U+2665, U+2713, U+30B3, U+30C8, U+30E9;
+}
+@font-face {
+  font-family: 'M PLUS Rounded 1c';
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/m-plus-rounded-1c-700-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'M PLUS Rounded 1c';
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/m-plus-rounded-1c-700-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'M PLUS Rounded 1c';
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/m-plus-rounded-1c-700-ui.woff2') format('woff2');
+  unicode-range: U+2190-2193, U+2265, U+2600, U+2605, U+2665, U+2713, U+30B3, U+30C8, U+30E9;
+}
+@font-face {
+  font-family: 'M PLUS Rounded 1c';
+  font-weight: 800;
+  font-display: swap;
+  src: url('/fonts/m-plus-rounded-1c-800-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'M PLUS Rounded 1c';
+  font-weight: 800;
+  font-display: swap;
+  src: url('/fonts/m-plus-rounded-1c-800-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'M PLUS Rounded 1c';
+  font-weight: 800;
+  font-display: swap;
+  src: url('/fonts/m-plus-rounded-1c-800-ui.woff2') format('woff2');
+  unicode-range: U+2190-2193, U+2265, U+2600, U+2605, U+2665, U+2713, U+30B3, U+30C8, U+30E9;
+}
+@font-face {
+  font-family: 'Mochiy Pop One';
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/mochiy-pop-one-400-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Mochiy Pop One';
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/mochiy-pop-one-400-ui.woff2') format('woff2');
+  unicode-range: U+2190-2193, U+2265, U+2600, U+2605, U+2665, U+2713, U+30B3, U+30C8, U+30E9;
+}
+
 :root {
   color-scheme: light dark;
   --bg: light-dark(#fff3f9, #110d22);
@@ -1373,6 +1475,20 @@ input[type='file']::file-selector-button {
   border: 2px solid var(--ink);
   border-radius: 8px;
   cursor: pointer;
+}
+/* The line under an image input saying what was picked (image-input.tsx). Empty,
+   it takes no room but stays a live region for screen readers. */
+.file-note {
+  display: block;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+.file-note:not(:empty) {
+  margin-top: 0.35rem;
+}
+.file-note.warn {
+  color: var(--danger);
+  font-weight: 700;
 }
 [role='alert'] {
   margin-top: 1rem;

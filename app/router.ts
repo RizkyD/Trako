@@ -65,9 +65,19 @@ const requireLogin: Middleware = (context, next) => {
   return redirect(routes.login.href())
 }
 
+// Files in public/: fonts and icons never change under the same name, so browsers
+// keep them for a year. Everything else is checked with the server each time it
+// is used (a 304 when unchanged), so an edited app.css or theme.js shows at once.
+const keptForGood = (path: string) => path.startsWith('fonts/') || path.startsWith('icon-')
+
 export const router = createRouter<AppContext>({
   middleware: [
-    staticFiles('./public', { index: false }),
+    staticFiles('./public', {
+      index: false,
+      filter: keptForGood,
+      cacheControl: 'public, max-age=31536000, immutable',
+    }),
+    staticFiles('./public', { index: false, cacheControl: 'no-cache' }),
     cop(),
     renderMiddleware,
     sessionMiddleware,
