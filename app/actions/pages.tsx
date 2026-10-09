@@ -1,7 +1,16 @@
 import { Fragment, unsafeHTML, type Handle, type RemixNode } from 'remix/component'
 
 import { COVER_ACCEPT } from '../covers.ts'
-import { STATUSES, TYPES, today, type Franchise, type Item, type User } from '../db.ts'
+import {
+  inList,
+  splitList,
+  STATUSES,
+  TYPES,
+  today,
+  type Franchise,
+  type Item,
+  type User,
+} from '../db.ts'
 import { markdown } from '../markdown.ts'
 import { routes } from '../routes.ts'
 import { Document } from './document.tsx'
@@ -103,18 +112,6 @@ function untilRelease(released: string, today: string): string {
     : relative.format(Math.round(days / 30.44), 'month')
 }
 
-// Names from a comma-separated field (platforms, tags).
-function splitList(list: string | null): string[] {
-  return (list ?? '')
-    .split(',')
-    .map((name) => name.trim())
-    .filter(Boolean)
-}
-
-// Whether a comma-separated field holds a name, in any case.
-const inList = (list: string | null, name: string) =>
-  splitList(list).some((entry) => entry.toLowerCase() === name.toLowerCase())
-
 // Every name in use in a comma-separated field, A to Z: the tags field
 // suggests them, the platform filter offers them.
 function namesIn(items: Item[], field: 'tags' | 'platforms'): string[] {
@@ -144,6 +141,8 @@ interface Filter {
   platform?: string
   // The lowest rating shown, 1 to 10.
   rating?: string
+  // Selection mode, for the bulk actions: any value, "all" ticking every shown title.
+  select?: string
 }
 
 function homeHref(filter: Filter): string {
@@ -217,15 +216,21 @@ interface HomeProps extends Required<Filter> {
   user: User
   items: Item[]
   franchises: Franchise[]
+  notice?: string
+  error?: string
 }
 
 export function HomePage(handle: Handle<HomeProps>) {
   return () => {
     let { user, items, franchises, status, type, franchise, q, favorite, tag, platform } =
       handle.props
+    let { select, notice, error } = handle.props
     let sort: Sort = Object.hasOwn(SORTS, handle.props.sort) ? (handle.props.sort as Sort) : ''
     let view: View = Object.hasOwn(VIEWS, handle.props.view) ? (handle.props.view as View) : ''
     let timeline = view === 'timeline'
+    // Selection mode puts a tick box on every title, for the bulk actions. The
+    // timeline has none.
+    let selecting = !timeline && select !== ''
     // Franchises read A to Z and releases oldest first by default; rankings
     // start from the top. The timeline ignores the sort: it is release order.
     let direction: Direction =
@@ -249,6 +254,8 @@ export function HomePage(handle: Handle<HomeProps>) {
       tag,
       platform,
       rating,
+      // Links keep selection mode on, with nothing ticked.
+      select: selecting ? '1' : '',
     }
     let needle = q.trim().toLowerCase()
     let shown = items.filter(
@@ -302,20 +309,36 @@ export function HomePage(handle: Handle<HomeProps>) {
     let activeFranchise = franchises.find((entry) => String(entry.id) === franchise)
     // The buttons on each title post with the list filter attached (see backToList).
     let back = homeHref(filter).slice(1)
-    // Shown titles still to come out, soonest first. The timeline has them in place.
+    // Shown titles still to come out, soonest first. The timeline has them in
+    // place, and selection mode only in their panels, where they can be ticked.
     let day = today()
-    let upcoming = timeline
-      ? []
-      : rank(
-          shown.filter((item) => item.released && firstDay(item.released) > day),
-          'released',
-          'asc',
-        )
+    let upcoming =
+      timeline || selecting
+        ? []
+        : rank(
+            shown.filter((item) => item.released && firstDay(item.released) > day),
+            'released',
+            'asc',
+          )
     // Franchise panels collapse; with a few of them, all at once too.
     let panels = timeline || sort !== '' ? 0 : [...groups.keys()].filter(Boolean).length
 
     let card = (item: Item) => (
-      <li key={item.id}>
+      // data-rmx-key: a page update matches each title to itself, not to whatever
+      // now sits in its place, so a tick (or focus) never moves to another title.
+      <li key={item.id} data-rmx-key={item.id}>
+        {selecting && (
+          // On a card the whole cover is the tick box's label (see app.css).
+          <label class="pick">
+            <input
+              type="checkbox"
+              name="id"
+              value={item.id}
+              checked={select === 'all'}
+              aria-label={`Select ${item.title}`}
+            />
+          </label>
+        )}
         <Cover item={item} />
         <div class="title">
           <a href={routes.itemEdit.href({ id: item.id })}>{item.title}</a>
@@ -354,7 +377,7 @@ export function HomePage(handle: Handle<HomeProps>) {
                   aria-label={`${item.title} progress`}
                 />
               )}
-              {item.progress_unit && item.status !== 'finished' && (
+              {item.progress_unit && item.status !== 'finished' && !selecting && (
                 // Submits the title's form (below) to the +1 action.
                 <button
                   type="submit"
@@ -391,42 +414,97 @@ export function HomePage(handle: Handle<HomeProps>) {
           <Formatted class="description" text={item.description} />
           <Formatted class="note" text={item.note} />
         </div>
-        {/* The step button submits to the form's action; the others name their own. */}
-        <form
-          id={`item-${item.id}`}
-          method="post"
-          action={routes.itemToggle.href({ id: item.id }) + back}
-          class="buttons"
-          data-rmx-reset-scroll="false"
-        >
-          <button
-            type="submit"
-            formaction={routes.itemFavorite.href({ id: item.id }) + back}
-            class="fav"
-            aria-pressed={item.favorite === 1 ? 'true' : 'false'}
-            title={item.favorite === 1 ? 'Remove from favorites' : 'Add to favorites'}
+        {/* The step button submits to the form's action; the others name their own.
+            Selection mode wraps the list in its own form, so these stay out of it. */}
+        {!selecting && (
+          <form
+            id={`item-${item.id}`}
+            method="post"
+            action={routes.itemToggle.href({ id: item.id }) + back}
+            class="buttons"
+            data-rmx-reset-scroll="false"
           >
-            <span aria-hidden="true">♥</span>
-            <span class="sr">Favorite</span>
-          </button>
-          <button type="submit" class="ghost">
-            {NEXT_STEP[item.status]}
-          </button>
-          {item.status === 'finished' && (
             <button
               type="submit"
-              formaction={routes.itemReplay.href({ id: item.id }) + back}
-              class="ghost"
+              formaction={routes.itemFavorite.href({ id: item.id }) + back}
+              class="fav"
+              aria-pressed={item.favorite === 1 ? 'true' : 'false'}
+              title={item.favorite === 1 ? 'Remove from favorites' : 'Add to favorites'}
             >
-              Replay
+              <span aria-hidden="true">♥</span>
+              <span class="sr">Favorite</span>
             </button>
-          )}
-        </form>
+            <button type="submit" class="ghost">
+              {NEXT_STEP[item.status]}
+            </button>
+            {item.status === 'finished' && (
+              <button
+                type="submit"
+                formaction={routes.itemReplay.href({ id: item.id }) + back}
+                class="ghost"
+              >
+                Replay
+              </button>
+            )}
+          </form>
+        )}
       </li>
     )
     let list = (entries: Item[]) => (
       <ul class={view === 'list' ? 'list' : 'grid'}>{entries.map(card)}</ul>
     )
+    // Grid and list: a panel per franchise, or one ranked panel.
+    let sections = timeline
+      ? []
+      : [...groups].map(([name, entries]) => {
+          if (!name) {
+            return (
+              <section key="" class="group loose" aria-label="Titles without a franchise">
+                {list(entries)}
+              </section>
+            )
+          }
+          if (sort !== '') {
+            return (
+              <section key={name} class="group">
+                <header>
+                  <h2>{name}</h2>
+                  <span class="pill">{entries.length} ranked</span>
+                </header>
+                {list(entries)}
+              </section>
+            )
+          }
+          let all = totals.get(name) ?? []
+          let done = all.filter((item) => item.status === 'finished').length
+          // A franchise of several types lists each type under its own heading.
+          let types = [...Map.groupBy(entries, (item) => item.type)].sort(
+            ([a], [b]) => TYPES.indexOf(a) - TYPES.indexOf(b),
+          )
+          return (
+            // Served open; entry.ts closes the ones collapsed in this browser.
+            <details key={name} class="group" open data-franchise={entries[0].franchise_id}>
+              <summary>
+                <h2>{name}</h2>
+                <span class="pill">
+                  {done}/{all.length} finished
+                </span>
+                <progress value={done} max={all.length} aria-label={`${name} progress`} />
+              </summary>
+              {types.length > 1
+                ? types.map(([value, own]) => (
+                    <Fragment key={value}>
+                      <h3 class="kind">
+                        <i class={`swatch ${value}`} />
+                        {TYPE_PLURAL[value]} <span>{own.length}</span>
+                      </h3>
+                      {list(own)}
+                    </Fragment>
+                  ))
+                : list(entries)}
+            </details>
+          )
+        })
 
     return (
       <Document title={APP}>
@@ -475,6 +553,8 @@ export function HomePage(handle: Handle<HomeProps>) {
               <span aria-hidden="true">+</span> Add title
             </button>
           </header>
+          {notice && <p role="status">{notice}</p>}
+          {error && <p role="alert">{error}</p>}
 
           <div class="toolbar">
             <SearchBox action={routes.home.href()} q={q} hidden={activeFilters({ ...filter, q: '' })} />
@@ -520,6 +600,18 @@ export function HomePage(handle: Handle<HomeProps>) {
                 </a>
               ))}
             </nav>
+            {!timeline && (
+              <a
+                class={selecting ? 'button primary' : 'button'}
+                href={homeHref({ ...filter, select: selecting ? '' : '1' })}
+              >
+                {selecting ? 'Done' : 'Select'}
+              </a>
+            )}
+            {/* A title to do next, of the type shown (see the random action). */}
+            <a class="button" href={routes.random.href() + back}>
+              Pick for me
+            </a>
           </div>
 
           <nav class="types" aria-label="Filters">
@@ -618,56 +710,103 @@ export function HomePage(handle: Handle<HomeProps>) {
             </section>
           )}
 
-          {!timeline &&
-            [...groups].map(([name, entries]) => {
-              if (!name) {
-                return (
-                  <section key="" class="group loose" aria-label="Titles without a franchise">
-                    {list(entries)}
-                  </section>
-                )
-              }
-              if (sort !== '') {
-                return (
-                  <section key={name} class="group">
-                    <header>
-                      <h2>{name}</h2>
-                      <span class="pill">{entries.length} ranked</span>
-                    </header>
-                    {list(entries)}
-                  </section>
-                )
-              }
-              let all = totals.get(name) ?? []
-              let done = all.filter((item) => item.status === 'finished').length
-              // A franchise of several types lists each type under its own heading.
-              let types = [...Map.groupBy(entries, (item) => item.type)].sort(
-                ([a], [b]) => TYPES.indexOf(a) - TYPES.indexOf(b),
-              )
-              return (
-                // Served open; entry.ts closes the ones collapsed in this browser.
-                <details key={name} class="group" open data-franchise={entries[0].franchise_id}>
-                  <summary>
-                    <h2>{name}</h2>
-                    <span class="pill">
-                      {done}/{all.length} finished
-                    </span>
-                    <progress value={done} max={all.length} aria-label={`${name} progress`} />
-                  </summary>
-                  {types.length > 1
-                    ? types.map(([value, own]) => (
-                        <Fragment key={value}>
-                          <h3 class="kind">
-                            <i class={`swatch ${value}`} />
-                            {TYPE_PLURAL[value]} <span>{own.length}</span>
-                          </h3>
-                          {list(own)}
-                        </Fragment>
-                      ))
-                    : list(entries)}
-                </details>
-              )
-            })}
+          {selecting && shown.length > 0 ? (
+            // One form around the whole list: the tick boxes and the bar's
+            // actions submit together, with or without JavaScript. Keyed, so
+            // after an action it stays the same form, ticks and all, even when
+            // a message appears above it.
+            <form
+              id="bulk"
+              method="post"
+              action={routes.itemsBulk.href() + back}
+              class="bulk"
+              data-rmx-key="bulk"
+              data-rmx-reset-scroll="false"
+            >
+              {sections}
+              <div class="bulkbar" role="group" aria-label="Bulk actions">
+                {/* entry.ts keeps the count and ticks or unticks every title in
+                    place; without JavaScript the links ask the server instead. */}
+                <p>
+                  <strong class="pill" data-selected>
+                    {select === 'all' ? shown.length : 0} selected
+                  </strong>
+                  <a href={homeHref({ ...filter, select: 'all' })} data-select="all">
+                    Select all shown
+                  </a>
+                  <a href={homeHref(filter)} data-select="none">
+                    Clear
+                  </a>
+                </p>
+                {/* The form's first button is the one Enter submits: add the tag typed. */}
+                <span>
+                  <input name="tag" list="tag-names" placeholder="Tag" aria-label="Tag to add" />
+                  <button type="submit" name="action" value="tag" class="ghost">
+                    Add tag
+                  </button>
+                </span>
+                <span>
+                  <select name="status" aria-label="New status">
+                    {STATUSES.map((value) => (
+                      <option key={value} value={value}>
+                        {STATUS_LABEL[value]}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="submit" name="action" value="status" class="ghost">
+                    Set status
+                  </button>
+                </span>
+                <span>
+                  <select name="franchise" aria-label="Franchise to move to">
+                    <option value="">No franchise</option>
+                    {franchises.map((entry) => (
+                      <option key={entry.id} value={entry.id}>
+                        {entry.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="submit" name="action" value="move" class="ghost">
+                    Move
+                  </button>
+                </span>
+                <span>
+                  <button type="submit" name="action" value="favorite" class="ghost">
+                    <span aria-hidden="true">♥</span> Favorite
+                  </button>
+                  <button type="submit" name="action" value="unfavorite" class="ghost">
+                    Unfavorite
+                  </button>
+                </span>
+                <button type="button" class="danger" popovertarget="confirm-bulk-delete">
+                  Delete…
+                </button>
+              </div>
+              {/* Deleting asks first; the button that deletes lives in this dialog. */}
+              <div id="confirm-bulk-delete" popover="auto" class="dialog confirm">
+                <h2>Delete the selected titles?</h2>
+                <p>
+                  They will be removed from your list, along with their covers. This cannot be
+                  undone.
+                </p>
+                <div class="actions">
+                  <button
+                    type="button"
+                    class="ghost"
+                    popovertarget="confirm-bulk-delete"
+                    popovertargetaction="hide"
+                  >
+                    Cancel
+                  </button>
+                  <button type="submit" name="action" value="delete" class="danger solid">
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </form>
+          ) : (
+            sections
+          )}
 
           <div id="add" popover="auto" class="dialog">
             <h2>Add title</h2>
@@ -882,6 +1021,218 @@ export function FranchisesPage(
                 })}
               </ul>
             </section>
+          )}
+        </Shell>
+      </Document>
+    )
+  }
+}
+
+export function StatsPage(handle: Handle<{ user: User; items: Item[] }>) {
+  return () => {
+    let { user, items } = handle.props
+    let day = today()
+    let count = (keep: (item: Item) => boolean) => items.filter(keep).length
+    let done = (entries: Item[]) => entries.filter((item) => item.status === 'finished').length
+    let rated = items.filter((item) => item.rating !== null)
+    let average = (entries: Item[]) =>
+      (entries.reduce((sum, item) => sum + (item.rating ?? 0), 0) / entries.length).toFixed(1)
+    let ratedTypes = TYPES.map((type) => [type, rated.filter((item) => item.type === type)] as const)
+      .filter(([, entries]) => entries.length > 0)
+    // Finished titles by the year of their finish date, newest first. A bar is
+    // as long as its share of the busiest year.
+    let years = [
+      ...Map.groupBy(
+        items.filter((item) => item.finished_at),
+        (item) => (item.finished_at ?? '').slice(0, 4),
+      ),
+    ].sort(([a], [b]) => b.localeCompare(a))
+    let busiest = Math.max(...years.map(([, entries]) => entries.length))
+    let dated = count((item) => item.finished_at !== null)
+    // Days in progress, from the start date to today.
+    let days = (item: Item) => (Date.parse(day) - Date.parse(item.started_at ?? day)) / 86_400_000
+    let running = items
+      .filter((item) => item.status === 'ongoing' && item.started_at && item.started_at <= day)
+      .sort((a, b) => days(b) - days(a))
+      .slice(0, 10)
+    // The franchises with the most titles first.
+    let franchises = [
+      ...Map.groupBy(
+        items.filter((item) => item.franchise),
+        (item) => item.franchise ?? '',
+      ),
+    ].sort(([a, x], [b, y]) => y.length - x.length || a.localeCompare(b))
+
+    return (
+      <Document title={`Stats — ${APP}`}>
+        <Shell user={user} items={items} filter={{}} active="stats">
+          <header class="page">
+            <div>
+              <h1>Stats</h1>
+              <p class="muted">Your list in numbers.</p>
+            </div>
+          </header>
+
+          {items.length === 0 ? (
+            <div class="empty">
+              <i class="logo" />
+              <p>Nothing to count yet. Add a few titles and their numbers show up here.</p>
+            </div>
+          ) : (
+            <>
+              <nav class="tiles" aria-label="Titles by type">
+                <a href={routes.home.href()}>
+                  <strong>{items.length}</strong>
+                  <span>All titles</span>
+                </a>
+                {TYPES.map((type) => (
+                  <a key={type} href={homeHref({ type })}>
+                    <strong>{count((item) => item.type === type)}</strong>
+                    <span>
+                      <i class={`swatch ${type}`} />
+                      {TYPE_PLURAL[type]}
+                    </span>
+                  </a>
+                ))}
+              </nav>
+              <nav class="tiles" aria-label="Titles by status">
+                {STATUSES.map((status) => (
+                  <a key={status} href={homeHref({ status })}>
+                    <strong>{count((item) => item.status === status)}</strong>
+                    <span>
+                      <i class={`state ${status}`} />
+                      {STATUS_LABEL[status]}
+                    </span>
+                  </a>
+                ))}
+                <a href={homeHref({ favorite: '1' })}>
+                  <strong>{count((item) => item.favorite === 1)}</strong>
+                  <span>
+                    <i class="state favorite" />
+                    Favorites
+                  </span>
+                </a>
+                <div>
+                  <strong>{items.reduce((sum, item) => sum + item.replays, 0)}</strong>
+                  <span>Replays</span>
+                </div>
+              </nav>
+
+              <div class="stats">
+                <section class="group">
+                  <header>
+                    <h2>Finished per year</h2>
+                    <span class="pill">
+                      {dated} {dated === 1 ? 'title' : 'titles'}
+                    </span>
+                  </header>
+                  {years.length > 0 ? (
+                    <ul class="bars">
+                      {years.map(([year, entries]) => (
+                        <li key={year}>
+                          <span>{year}</span>
+                          <i style={{ width: `${Math.round((entries.length / busiest) * 100)}%` }} />
+                          <b>{entries.length}</b>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p class="muted">No finished titles yet.</p>
+                  )}
+                </section>
+
+                <section class="group">
+                  <header>
+                    <h2>Average rating</h2>
+                    {rated.length > 0 && <span class="pill">★ {average(rated)} overall</span>}
+                  </header>
+                  {rated.length > 0 ? (
+                    <ul class="bars">
+                      {ratedTypes.map(([type, entries]) => (
+                        <li key={type}>
+                          <span>
+                            {TYPE_PLURAL[type]} <small>({entries.length})</small>
+                          </span>
+                          <i style={{ width: `${Math.round(Number(average(entries)) * 10)}%` }} />
+                          <b>{average(entries)}</b>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p class="muted">No ratings yet.</p>
+                  )}
+                </section>
+
+                <section class="group wide">
+                  <header>
+                    <h2>Top rated</h2>
+                  </header>
+                  {rated.length > 0 ? (
+                    <ul class="compact">
+                      {rank(rated, 'rating', 'desc')
+                        .slice(0, 10)
+                        .map((item) => (
+                          <Compact key={item.id} item={item}>
+                            <span class="rating">★ {item.rating}</span>
+                            {item.franchise}
+                          </Compact>
+                        ))}
+                    </ul>
+                  ) : (
+                    <p class="muted">No ratings yet.</p>
+                  )}
+                </section>
+
+                <section class="group wide">
+                  <header>
+                    <h2>Longest running</h2>
+                    <span class="pill">{count((item) => item.status === 'ongoing')} in progress</span>
+                  </header>
+                  {running.length > 0 ? (
+                    <ul class="compact">
+                      {running.map((item) => (
+                        <Compact key={item.id} item={item}>
+                          <strong>
+                            {days(item)} {days(item) === 1 ? 'day' : 'days'}
+                          </strong>{' '}
+                          · since {dateFormat.format(new Date(item.started_at ?? day))}
+                        </Compact>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p class="muted">Nothing in progress with a start date.</p>
+                  )}
+                </section>
+
+                <section class="group wide">
+                  <header>
+                    <h2>Franchises</h2>
+                    <span class="pill">{franchises.length} with titles</span>
+                  </header>
+                  {franchises.length > 0 ? (
+                    <ul class="bars">
+                      {franchises.map(([name, entries]) => (
+                        <li key={name}>
+                          <a href={homeHref({ franchise: String(entries[0].franchise_id) })}>
+                            {name}
+                          </a>
+                          <progress
+                            value={done(entries)}
+                            max={entries.length}
+                            aria-label={`${name} finished`}
+                          />
+                          <b>
+                            {done(entries)}/{entries.length}
+                          </b>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p class="muted">No titles in a franchise yet.</p>
+                  )}
+                </section>
+              </div>
+            </>
           )}
         </Shell>
       </Document>
@@ -1152,7 +1503,7 @@ function Shell(
     user: User
     items: Item[]
     filter: Filter
-    active?: 'home' | 'franchises' | 'settings'
+    active?: 'home' | 'franchises' | 'stats' | 'settings'
     children?: RemixNode
   }>,
 ) {
@@ -1179,6 +1530,9 @@ function Shell(
               aria-current={active === 'franchises' ? 'page' : undefined}
             >
               Franchises
+            </a>
+            <a href={routes.stats.href()} aria-current={active === 'stats' ? 'page' : undefined}>
+              Stats
             </a>
             <a
               href={routes.settings.href()}

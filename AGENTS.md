@@ -24,7 +24,7 @@ Refer to ./.agents/skills/remix/SKILL.md for the Remix mental model and how to f
 - `app/routes.ts` defines the shared route contract used by server and browser modules for type-safe hrefs
 - `app/router.ts` wires routes to controllers and installs the standard Remix component renderer used by actions
 - Put top-level route actions in `app/actions/controller.tsx`; add `app/actions/<route-key>/controller.tsx` for nested route maps. `app/actions/controller.test.ts` is the root controller's router smoke test
-- `app/actions/pages.tsx` and `app/actions/document.tsx` render the Trako UI (sign in, titles, edit, franchises); UI text is English
+- `app/actions/pages.tsx` and `app/actions/document.tsx` render the Trako UI (sign in, titles, edit, franchises, stats); UI text is English
 - `app/db.ts` owns the SQLite schema (`node:sqlite`, file `data/tracker.db`), its migrations, password hashing, and item/franchise queries
 - Settings page (`/settings`): theme picker (`app/actions/public/theme-toggle.tsx` + `public/theme.js`), export, import
 - `app/transfer.ts` exports and imports the whole list as one JSON file (covers embedded)

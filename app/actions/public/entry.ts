@@ -44,9 +44,35 @@ let restorePanels = () => {
   for (let panel of panels()) panel.open = !collapsed.has(panel.dataset.franchise ?? '')
 }
 restorePanels()
-// Each page a navigation brings in arrives with its panels open; close the
-// remembered ones before it is painted.
-new MutationObserver(restorePanels).observe(document.body, {
+
+// Selection mode on the Titles page: the bar counts the ticked titles.
+let ticks = () => document.querySelectorAll<HTMLInputElement>('#bulk input[name="id"]')
+let countSelected = () => {
+  let text = `${[...ticks()].filter((box) => box.checked).length} selected`
+  for (let count of document.querySelectorAll('[data-selected]')) {
+    // Only when it differs: this runs after every page update, its own included.
+    if (count.textContent !== text) count.textContent = text
+  }
+}
+countSelected()
+document.addEventListener('change', countSelected)
+// "Select all shown" and "Clear" tick or untick every title in place; without
+// JavaScript they are links to the list served that way.
+document.addEventListener('click', (event) => {
+  let link = event.target instanceof Element ? event.target.closest('[data-select]') : null
+  if (!link) return
+  event.preventDefault()
+  for (let box of ticks()) box.checked = link.getAttribute('data-select') === 'all'
+  countSelected()
+})
+
+// Each page a navigation brings in arrives with its panels open and the
+// server's count (ticks survive it); close the remembered panels and recount
+// before it is painted.
+new MutationObserver(() => {
+  restorePanels()
+  countSelected()
+}).observe(document.body, {
   childList: true,
   subtree: true,
   attributeFilter: ['data-franchise'],

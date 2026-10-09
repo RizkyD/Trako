@@ -408,6 +408,79 @@ export function deleteItem(id: string): void {
   db.prepare('DELETE FROM items WHERE id = ?').run(id)
 }
 
+// Bulk edits from the Titles page work on titles picked by id, passed as one
+// JSON array; ids of titles that no longer exist match nothing.
+const PICKED = 'items.id IN (SELECT value FROM json_each($ids))'
+
+export function pickedItems(ids: number[]): Item[] {
+  return db
+    .prepare(`${ITEM_SELECT} WHERE ${PICKED}`)
+    .all({ ids: JSON.stringify(ids) }) as unknown as Item[]
+}
+
+// Starting notes the day unless there is one, as the step button does, and so
+// does finishing. A title that is not finished has no finish date.
+export function setStatus(ids: number[], status: Item['status']): void {
+  db.prepare(
+    `UPDATE items SET
+       started_at = CASE $status WHEN 'ongoing' THEN COALESCE(started_at, $day) ELSE started_at END,
+       finished_at = CASE $status WHEN 'finished' THEN COALESCE(finished_at, $day) ELSE NULL END,
+       status = $status
+     WHERE ${PICKED}`,
+  ).run({ status, day: today(), ids: JSON.stringify(ids) })
+}
+
+export function setFranchise(ids: number[], franchiseId: number | null): void {
+  db.prepare(`UPDATE items SET franchise_id = $franchise WHERE ${PICKED}`).run({
+    franchise: franchiseId,
+    ids: JSON.stringify(ids),
+  })
+}
+
+export function setFavorite(ids: number[], favorite: 0 | 1): void {
+  db.prepare(`UPDATE items SET favorite = $favorite WHERE ${PICKED}`).run({
+    favorite,
+    ids: JSON.stringify(ids),
+  })
+}
+
+// Adds each tag to the titles that do not have it yet, in any case.
+export function addTags(items: Item[], tags: string[]): void {
+  let update = db.prepare('UPDATE items SET tags = ? WHERE id = ?')
+  for (let item of items) {
+    let next = item.tags
+    for (let tag of tags) if (!inList(next, tag)) next = next ? `${next}, ${tag}` : tag
+    if (next !== item.tags) update.run(next, item.id)
+  }
+}
+
+export function deleteItems(ids: number[]): void {
+  db.prepare(`DELETE FROM items WHERE ${PICKED}`).run({ ids: JSON.stringify(ids) })
+}
+
+// A title to do next, at random: planned or on hold when there is one, else
+// anything not finished. An empty type picks from every type.
+export function randomItem(type: string): { id: number } | undefined {
+  return db
+    .prepare(
+      `SELECT id FROM items WHERE status != 'finished' AND ($type = '' OR type = $type)
+       ORDER BY status IN ('planned', 'on_hold') DESC, random() LIMIT 1`,
+    )
+    .get({ type }) as { id: number } | undefined
+}
+
+// Names from a comma-separated field (platforms, tags).
+export function splitList(list: string | null): string[] {
+  return (list ?? '')
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean)
+}
+
+// Whether a comma-separated field holds a name, in any case.
+export const inList = (list: string | null, name: string) =>
+  splitList(list).some((entry) => entry.toLowerCase() === name.toLowerCase())
+
 export function today(): string {
   return new Date().toLocaleDateString('sv') // YYYY-MM-DD in local time
 }

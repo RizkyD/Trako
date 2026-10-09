@@ -1041,6 +1041,83 @@ li:has(.state.finished) .title > a {
   border-radius: 0 8px 8px 0;
 }
 
+/* Selection mode: a tick box on every title, and a bar of actions for the ticked ones */
+form.bulk {
+  display: grid;
+  gap: inherit;
+}
+.pick input {
+  width: 1.35rem;
+  height: 1.35rem;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+/* On a card the whole cover is the tick box's label; the box sits on its corner. */
+.grid .pick {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 0;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  cursor: pointer;
+}
+.grid .pick input {
+  position: absolute;
+  top: -0.45rem;
+  right: -0.45rem;
+}
+li:has(.pick :checked) .cover {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+.bulkbar {
+  position: sticky;
+  bottom: 1rem;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1rem;
+  padding: 0.8rem 1rem;
+  background: var(--surface);
+  border: 2px solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: 5px 5px 0 var(--ink);
+}
+.bulkbar p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+.bulkbar p a {
+  color: var(--accent-2);
+  text-decoration: underline;
+}
+.bulkbar > span {
+  display: flex;
+  gap: 0.4rem;
+}
+.bulkbar :is(input, select) {
+  width: 8.5rem;
+  margin: 0;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.85rem;
+}
+.bulkbar > .danger {
+  margin-left: auto;
+}
+/* Without JavaScript nothing keeps the count, so it stays out of sight. */
+@media (scripting: none) {
+  [data-selected] {
+    display: none;
+  }
+}
+
 /* Compact cards (timeline, upcoming): a small cover beside the title */
 ul.compact {
   display: grid;
@@ -1432,6 +1509,86 @@ input[type='file']::file-selector-button {
   }
 }
 
+/* Stats: tiles of counts, then panels of bars */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+  gap: 0.8rem;
+}
+.tiles > * {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.65rem 0.75rem;
+  background: var(--surface);
+  border: 2px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 3px 3px 0 var(--ink);
+  transition:
+    transform 0.12s,
+    box-shadow 0.12s;
+}
+.tiles a:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--ink);
+}
+.tiles strong {
+  font: 400 1.6rem/1.15 var(--display);
+  color: var(--accent);
+}
+.tiles span {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--muted);
+}
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: 1.4rem;
+  align-items: start;
+}
+.stats .group > :not(header) {
+  padding: 1.1rem 1.4rem 1.3rem;
+}
+/* A label, the bar, the number; every row lines up on the same columns. */
+.bars {
+  display: grid;
+  grid-template-columns: fit-content(45%) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.6rem 0.8rem;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+.bars li {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+}
+.bars i {
+  height: 14px;
+  min-width: 14px;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--accent) 0 8px,
+    color-mix(in srgb, var(--accent) 70%, white) 8px 16px
+  );
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+}
+.bars progress {
+  grid-column: 2;
+}
+.bars b {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.bars a:hover {
+  color: var(--accent);
+}
+
 /* Sign in */
 main.auth {
   place-items: center;
@@ -1538,6 +1695,15 @@ main.auth {
   .list .title {
     flex-basis: calc(100% - 4.5rem);
   }
+  /* A row being picked has no buttons to wrap under it, and room for its tick box. */
+  .list li:has(.pick) {
+    flex-wrap: nowrap;
+  }
+  .bulkbar {
+    bottom: 0.5rem;
+    gap: 0.45rem 0.6rem;
+    padding: 0.6rem 0.75rem;
+  }
   /* The year goes above its titles. */
   .timeline .year {
     grid-template-columns: minmax(0, 1fr);
@@ -1545,7 +1711,8 @@ main.auth {
     padding-inline: 1.1rem;
   }
   .upcoming > ul,
-  .kind {
+  .kind,
+  .stats .group > :not(header) {
     padding-inline: 1.1rem;
   }
   .panel.edit {

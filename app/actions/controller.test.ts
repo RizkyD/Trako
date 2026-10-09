@@ -635,4 +635,237 @@ describe('tracker', () => {
     assert.match(editPage, /<textarea name="description"[^>]*>\*\*Bold\*\* &lt;script&gt;alert\(1\)&lt;\/script&gt;/)
     assert.match(editPage, /<textarea name="note"[^>]*>line one\nline two\n\n- item<\/textarea>/)
   })
+
+  it('changes, moves, tags, favorites and deletes ticked titles in bulk', async () => {
+    // As above: the account the first flow leaves behind, or a new one when run alone.
+    let cookie = cookieOf(await post(routes.loginSubmit.href(), { username: 'aku', password: 'baru-sekali-9' }))
+    let page = async (query: string) => (await get(routes.home.href() + query, cookie)).text()
+    let file = (text: string) => new File([text], 'backup.json', { type: 'application/json' })
+    // A known list to start from; Mushishi comes with a cover.
+    let items = [
+      { title: 'Monster', type: 'manga', status: 'planned' },
+      { title: 'Pluto', type: 'manga', status: 'ongoing', started_at: '2026-01-02', tags: 'Urasawa' },
+      { title: 'Akira', type: 'film', status: 'finished', finished_at: '2020-01-01' },
+      { title: 'Mushishi', type: 'anime', status: 'on_hold', franchise: 'Mushishi', cover: { extension: 'png', data: 'iVBORw==' } },
+    ]
+    await post(routes.import.href(), { file: file(JSON.stringify({ app: 'trako', items })), replace: 'on' }, cookie)
+    let idOf = async (title: string) => /href="\/items\/(\d+)"/.exec(await page(`?q=${title}`))?.[1] ?? ''
+    let [monster, pluto, akira, mushishi] = await Promise.all(items.map((item) => idOf(item.title)))
+    // Every title as the export has it, by title.
+    let titles = async () =>
+      Object.fromEntries(
+        JSON.parse(await (await get(routes.export.href(), cookie)).text()).items.map(
+          (item: { title: string }) => [item.title, item],
+        ),
+      )
+    // The form sends one `id` per ticked title, so its fields are pairs.
+    let bulk = async (query: string, fields: string[][]) => {
+      let response = await router.fetch(
+        new Request(origin + routes.itemsBulk.href() + query, {
+          method: 'POST',
+          body: new URLSearchParams(fields),
+          headers: { Cookie: cookie },
+          redirect: 'manual',
+        }),
+      )
+      cookie = cookieOf(response) || cookie
+      return response
+    }
+    let ticked = (...ids: string[]) => ids.map((id) => ['id', id])
+    let today = new Date().toLocaleDateString('sv')
+
+    // Selection mode is a link away. It wraps the list in one form, a tick box
+    // per title and no buttons of their own; the timeline has none of it.
+    assert.match(await page('?type=manga'), /<a href="\/\?type=manga&amp;select=1" class="button">Select<\/a>/)
+    let selecting = await page('?type=manga&select=1')
+    let form = /<form id="bulk" method="post" action="\/items\/bulk\?type=manga&amp;select=1".*?<\/form>/s.exec(selecting)?.[0] ?? ''
+    assert.equal(form.match(/<input type="checkbox" name="id"/g)?.length, 2)
+    assert.ok(form.includes(`value="${monster}"`) && form.includes(`value="${pluto}"`))
+    assert.doesNotMatch(selecting, /\/toggle/)
+    assert.match(form, /<a href="\/\?type=manga&amp;select=all" data-select="all">Select all shown<\/a>/)
+    assert.equal((await page('?type=manga&select=all')).match(/name="id" value="\d+" checked/g)?.length, 2)
+    assert.doesNotMatch(await page('?view=timeline&select=1'), /name="id"/)
+    // Deleting asks first, in a dialog whose button submits the form.
+    assert.match(form, /id="confirm-bulk-delete" popover[^]*<button type="submit" name="action" value="delete"/)
+
+    // Finishing notes the day, unless there is one; back on the same list, saying so.
+    let finished = await bulk('?type=manga&select=1', [
+      ['action', 'status'],
+      ['status', 'finished'],
+      ...ticked(monster, pluto, akira),
+    ])
+    assert.equal(finished.headers.get('Location'), '/?type=manga&select=1')
+    assert.match(await page('?type=manga&select=1'), /<p role="status">Updated 3 titles\.<\/p>/)
+    let list = await titles()
+    assert.deepEqual([list.Monster.status, list.Monster.started_at, list.Monster.finished_at], ['finished', null, today])
+    assert.deepEqual([list.Pluto.started_at, list.Pluto.finished_at], ['2026-01-02', today])
+    assert.equal(list.Akira.finished_at, '2020-01-01')
+    // Starting notes the day, unless there is one; a title not finished has no finish date.
+    await bulk('', [['action', 'status'], ['status', 'ongoing'], ...ticked(monster, pluto)])
+    await bulk('', [['action', 'status'], ['status', 'planned'], ...ticked(akira)])
+    list = await titles()
+    assert.deepEqual([list.Monster.started_at, list.Monster.finished_at], [today, null])
+    assert.deepEqual([list.Pluto.started_at, list.Pluto.finished_at], ['2026-01-02', null])
+    assert.deepEqual([list.Akira.status, list.Akira.finished_at], ['planned', null])
+
+    // Ids of titles that do not exist are skipped; with none left, nothing happens.
+    await bulk('', [['action', 'favorite'], ...ticked(monster, '9999', 'x', akira)])
+    assert.match(await page(''), /Updated 2 titles\./)
+    list = await titles()
+    assert.deepEqual([list.Monster.favorite, list.Akira.favorite, list.Pluto.favorite], [true, true, false])
+    let nothing = await bulk('?q=x', [['action', 'delete'], ...ticked('9999')])
+    assert.equal(nothing.headers.get('Location'), '/?q=x')
+    assert.match(await page(''), /<p role="alert">Select at least one title first\.<\/p>/)
+    assert.equal(Object.keys(await titles()).length, 4)
+    await bulk('', [['action', 'unfavorite'], ...ticked(monster)])
+    assert.equal((await titles()).Monster.favorite, false)
+
+    // Moving picks a franchise by id; the empty choice takes titles out of theirs.
+    let franchise = /<option value="(\d+)">Mushishi<\/option>/.exec(await page('?select=1'))?.[1] ?? ''
+    await bulk('', [['action', 'move'], ['franchise', franchise], ...ticked(monster, pluto)])
+    await bulk('', [['action', 'move'], ['franchise', ''], ...ticked(pluto, mushishi)])
+    list = await titles()
+    assert.deepEqual([list.Monster.franchise, list.Pluto.franchise, list.Mushishi.franchise], ['Mushishi', null, null])
+    assert.equal((await bulk('', [['action', 'move'], ['franchise', '999'], ...ticked(pluto)])).status, 400)
+
+    // A tag goes to the titles that lack it, in any case; an empty one is refused.
+    await bulk('', [['action', 'tag'], ['tag', ' urasawa '], ...ticked(monster, pluto)])
+    await bulk('', [['action', 'tag'], ['tag', 'seinen'], ...ticked(monster, pluto)])
+    list = await titles()
+    assert.deepEqual([list.Monster.tags, list.Pluto.tags], ['urasawa, seinen', 'Urasawa, seinen'])
+    await bulk('', [['action', 'tag'], ['tag', ' '], ...ticked(monster)])
+    assert.match(await page(''), /Type the tag to add first\./)
+    assert.equal((await titles()).Monster.tags, 'urasawa, seinen')
+
+    // Deleting takes the covers along.
+    let coverPath = /src="(\/covers\/[^"]+)"/.exec(await page('?q=Mushishi'))?.[1] ?? ''
+    assert.equal((await get(coverPath, cookie)).status, 200)
+    await bulk('', [['action', 'delete'], ...ticked(mushishi, akira)])
+    assert.match(await page(''), /Deleted 2 titles\./)
+    assert.deepEqual(Object.keys(await titles()).sort(), ['Monster', 'Pluto'])
+    assert.equal((await get(coverPath, cookie)).status, 404)
+
+    // Anything else is refused.
+    assert.equal((await bulk('', [['action', 'explode'], ...ticked(monster)])).status, 400)
+    assert.equal((await bulk('', [['action', 'status'], ['status', 'paused'], ...ticked(monster)])).status, 400)
+  })
+
+  it('counts the list up on the stats page', async () => {
+    // As above: the account the first flow leaves behind, or a new one when run alone.
+    let cookie = cookieOf(await post(routes.loginSubmit.href(), { username: 'aku', password: 'baru-sekali-9' }))
+    let load = (items: object[]) => {
+      let file = new File([JSON.stringify({ app: 'trako', items })], 'backup.json', { type: 'application/json' })
+      return post(routes.import.href(), { file, replace: 'on' }, cookie)
+    }
+    let stats = async () => (await get(routes.stats.href(), cookie)).text()
+    // A day relative to today, in local time, as dates are stored.
+    let day = (offset: number) => {
+      let date = new Date()
+      date.setDate(date.getDate() + offset)
+      return date.toLocaleDateString('sv')
+    }
+
+    await load([])
+    let empty = await stats()
+    assert.match(empty, /<a href="\/stats" aria-current="page">Stats<\/a>/)
+    assert.match(empty, /Nothing to count yet/)
+    await load([{ title: 'Solo', type: 'novel', status: 'planned' }])
+    let bare = await stats()
+    for (let text of ['No finished titles yet', 'No ratings yet', 'Nothing in progress with a start date', 'No titles in a franchise yet']) {
+      assert.match(bare, new RegExp(text))
+    }
+
+    await load([
+      { title: 'Ys I', type: 'game', status: 'finished', finished_at: '2024-03-01', rating: 8, franchise: 'Ys', favorite: true, replays: 2 },
+      { title: 'Ys II', type: 'game', status: 'finished', finished_at: '2025-05-01', rating: 10, franchise: 'Ys' },
+      { title: 'Ys III', type: 'game', status: 'ongoing', started_at: day(-100), franchise: 'Ys' },
+      { title: 'Frieren', type: 'anime', status: 'finished', finished_at: '2025-07-01', rating: 7, favorite: true, replays: 1 },
+      { title: 'Dandadan', type: 'anime', status: 'ongoing', started_at: day(-10) },
+      { title: 'Vagabond', type: 'manga', status: 'on_hold', franchise: 'Vagabond' },
+    ])
+    let html = await stats()
+    let section = (name: string) => html.split(`<h2>${name}</h2>`)[1]?.split('</section>')[0] ?? ''
+    let names = (part: string) => [...part.matchAll(/<div class="title"><a href="\/items\/\d+">([^<]+)</g)].map((match) => match[1])
+
+    // Tiles: all titles and each type, then each status, favorites and replays.
+    for (let [count, label] of [
+      [6, 'All titles'],
+      [3, 'Games'],
+      [1, 'Manga'],
+      [0, 'Novels'],
+      [2, 'Anime'],
+      [0, 'Planned'],
+      [2, 'In progress'],
+      [1, 'On hold'],
+      [3, 'Finished'],
+      [2, 'Favorites'],
+      [3, 'Replays'],
+    ] as const) {
+      assert.match(html, new RegExp(`<strong>${count}</strong><span>(<i class="[^"]+"></i>)?${label}</span>`), label)
+    }
+    // Finished per year, newest first, each bar a share of the busiest year.
+    let years = section('Finished per year')
+    assert.match(years, /<span class="pill">3 titles<\/span>/)
+    assert.deepEqual(
+      [...years.matchAll(/<span>(\d{4})<\/span><i style="width: (\d+)%;"><\/i><b>(\d+)<\/b>/g)].map((match) => match.slice(1).join(' ')),
+      ['2025 100 2', '2024 50 1'],
+    )
+    // Average rating overall and per type, out of 10.
+    let ratings = section('Average rating')
+    assert.match(ratings, /★ 8\.3 overall/)
+    assert.deepEqual(
+      [...ratings.matchAll(/<span>(\w+) <small>\((\d+)\)<\/small><\/span><i style="width: (\d+)%;"><\/i><b>([\d.]+)<\/b>/g)].map((match) =>
+        match.slice(1).join(' '),
+      ),
+      ['Games 2 90 9.0', 'Anime 1 70 7.0'],
+    )
+    // The best rated first; the longest in progress first, by days since the start.
+    assert.deepEqual(names(section('Top rated')), ['Ys II', 'Ys I', 'Frieren'])
+    let running = section('Longest running')
+    assert.deepEqual(names(running), ['Ys III', 'Dandadan'])
+    assert.match(running, /<strong>100 days<\/strong> · since/)
+    assert.match(running, /<strong>10 days<\/strong> · since/)
+    // Franchises with the most titles first, each with its finished share.
+    assert.deepEqual(
+      [...section('Franchises').matchAll(/">([^<]+)<\/a><progress value="(\d+)" max="(\d+)"/g)].map((match) => match.slice(1).join(' ')),
+      ['Ys 2 3', 'Vagabond 0 1'],
+    )
+  })
+
+  it('picks a title to do next', async () => {
+    // As above: the account the first flow leaves behind, or a new one when run alone.
+    let cookie = cookieOf(await post(routes.loginSubmit.href(), { username: 'aku', password: 'baru-sekali-9' }))
+    let items = [
+      { title: 'Done game', type: 'game', status: 'finished' },
+      { title: 'Busy game', type: 'game', status: 'ongoing' },
+      { title: 'Planned anime', type: 'anime', status: 'planned' },
+      { title: 'Paused anime', type: 'anime', status: 'on_hold' },
+      { title: 'Dropped anime', type: 'anime', status: 'dropped' },
+      { title: 'Done manga', type: 'manga', status: 'finished' },
+    ]
+    let file = new File([JSON.stringify({ app: 'trako', items })], 'backup.json', { type: 'application/json' })
+    await post(routes.import.href(), { file, replace: 'on' }, cookie)
+    // The title of the edit page a pick goes to.
+    let pick = async (query: string) => {
+      let picked = await get(routes.random.href() + query, cookie)
+      let edit = await (await get(picked.headers.get('Location') ?? '', cookie)).text()
+      return /<h1>([^<]+)<\/h1>/.exec(edit)?.[1] ?? ''
+    }
+
+    // The list offers it, for the type shown.
+    let anime = await (await get(routes.home.href() + '?type=anime', cookie)).text()
+    assert.match(anime, /<a href="\/random\?type=anime" class="button">Pick for me<\/a>/)
+    // Planned or on hold first, of the type asked for if any; other filters do not count.
+    for (let i = 0; i < 10; i++) {
+      assert.ok(['Planned anime', 'Paused anime'].includes(await pick('?type=anime&status=finished')))
+      assert.ok(['Planned anime', 'Paused anime'].includes(await pick('')))
+    }
+    // With none of those, anything not finished.
+    assert.equal(await pick('?type=game'), 'Busy game')
+    // Nothing left: back on the same list, saying so.
+    let none = await get(routes.random.href() + '?type=manga&q=x', cookie)
+    assert.equal(none.headers.get('Location'), '/?type=manga&q=x')
+    let list = await (await get('/?type=manga&q=x', cookieOf(none))).text()
+    assert.match(list, /<p role="alert">Nothing left to pick\.<\/p>/)
+  })
 })

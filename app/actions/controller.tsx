@@ -4,6 +4,7 @@ import { createController } from 'remix/router'
 import { assets } from '../assets.ts'
 import { coverResponse, deleteCover, saveCover } from '../covers.ts'
 import {
+  addTags,
   advanceItem,
   changePassword,
   changeUsername,
@@ -12,23 +13,39 @@ import {
   createUser,
   deleteFranchise,
   deleteItem,
+  deleteItems,
   getItem,
   getUser,
   hasUser,
   listFranchises,
   listItems,
   parseItem,
+  pickedItems,
+  randomItem,
   renameFranchise,
   replayItem,
   setAvatar,
+  setFavorite,
+  setFranchise,
+  setStatus,
+  splitList,
+  STATUSES,
   toggleFavorite,
   toggleItem,
   updateItem,
   verifyUser,
+  type Item,
 } from '../db.ts'
 import { routes } from '../routes.ts'
 import { exportData, importData } from '../transfer.ts'
-import { EditPage, FranchisesPage, HomePage, LoginPage, SettingsPage } from './pages.tsx'
+import {
+  EditPage,
+  FranchisesPage,
+  HomePage,
+  LoginPage,
+  SettingsPage,
+  StatsPage,
+} from './pages.tsx'
 
 const home = () => redirect(routes.home.href())
 // The buttons on a listed title carry the active list filter in their query
@@ -84,8 +101,12 @@ export default createController(routes, {
 
     home(context) {
       let query = context.url.searchParams
+      let notice = context.session.get('notice')
+      let error = context.session.get('error')
       return context.render(
         <HomePage
+          notice={typeof notice === 'string' ? notice : undefined}
+          error={typeof error === 'string' ? error : undefined}
           user={userOf(context)}
           items={listItems()}
           franchises={listFranchises()}
@@ -100,8 +121,51 @@ export default createController(routes, {
           tag={query.get('tag') ?? ''}
           platform={query.get('platform') ?? ''}
           rating={query.get('rating') ?? ''}
+          select={query.get('select') ?? ''}
         />,
       )
+    },
+    // Selection mode's actions, on every ticked title; ids of titles that are
+    // gone are skipped. Back on the list the form came from, as with backToList.
+    async itemsBulk(context) {
+      let field = (name: string) => String(context.formData.get(name) ?? '').trim()
+      let items = pickedItems(context.formData.getAll('id').map(Number))
+      let ids = items.map((item) => item.id)
+      let action = field('action')
+      let status = field('status') as Item['status']
+      // Picked by id; the empty choice takes the titles out of their franchise.
+      let franchise = field('franchise')
+        ? listFranchises().find((entry) => String(entry.id) === field('franchise'))
+        : null
+      let tags = splitList(field('tag'))
+      let fail = (message: string) => {
+        context.session.flash('error', message)
+        return backToList(context)
+      }
+
+      if (ids.length === 0) return fail('Select at least one title first.')
+      if (action === 'tag' && tags.length === 0) return fail('Type the tag to add first.')
+      if (action === 'status' && STATUSES.includes(status)) setStatus(ids, status)
+      else if (action === 'move' && franchise !== undefined) setFranchise(ids, franchise?.id ?? null)
+      else if (action === 'tag') addTags(items, tags)
+      else if (action === 'favorite') setFavorite(ids, 1)
+      else if (action === 'unfavorite') setFavorite(ids, 0)
+      else if (action === 'delete') deleteItems(ids)
+      else return badRequest()
+      // Deleted titles take their cover files along.
+      if (action === 'delete') for (let item of items) await deleteCover(item.cover)
+
+      let titles = `${ids.length} ${ids.length === 1 ? 'title' : 'titles'}`
+      context.session.flash('notice', `${action === 'delete' ? 'Deleted' : 'Updated'} ${titles}.`)
+      return backToList(context)
+    },
+    // A title to do next, of the type the list shows; the other filters only
+    // matter for going back to the list when there is nothing to pick.
+    random(context) {
+      let item = randomItem(context.url.searchParams.get('type') ?? '')
+      if (item) return redirect(routes.itemEdit.href({ id: item.id }))
+      context.session.flash('error', 'Nothing left to pick.')
+      return backToList(context)
     },
     async itemCreate(context) {
       let item = parseItem(context.formData)
@@ -190,6 +254,10 @@ export default createController(routes, {
     franchiseDelete(context) {
       deleteFranchise(context.params.id)
       return redirect(routes.franchises.href())
+    },
+
+    stats(context) {
+      return context.render(<StatsPage user={userOf(context)} items={listItems()} />)
     },
 
     settings(context) {
