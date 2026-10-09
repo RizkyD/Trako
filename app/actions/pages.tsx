@@ -9,8 +9,29 @@ import { SearchBox } from './public/search-box.tsx'
 import { ThemePicker } from './public/theme-toggle.tsx'
 
 const APP = 'Trako'
-const STATUS_LABEL = { planned: 'Planned', ongoing: 'In progress', finished: 'Finished' }
-const NEXT_STEP = { planned: 'Start', ongoing: 'Mark finished', finished: 'Reopen' }
+const STATUS_LABEL = {
+  planned: 'Planned',
+  ongoing: 'In progress',
+  on_hold: 'On hold',
+  dropped: 'Dropped',
+  finished: 'Finished',
+}
+const NEXT_STEP = {
+  planned: 'Start',
+  ongoing: 'Mark finished',
+  on_hold: 'Resume',
+  dropped: 'Resume',
+  finished: 'Reopen',
+}
+// What progress is usually counted in, per type: the unit field's placeholder.
+const UNIT_HINT: Record<Item['type'], string> = {
+  game: 'hours',
+  manga: 'chapters',
+  novel: 'chapters',
+  film: '',
+  series: 'episodes',
+  anime: 'episodes',
+}
 
 // Sort orders. The default groups titles by franchise; the others rank every
 // shown title in one flat list.
@@ -55,18 +76,27 @@ function formatReleased(released: string): string {
   })
 }
 
-// Platform names from the comma-separated field.
-function platformsOf(item: Item): string[] {
-  return (item.platforms ?? '')
+// Names from a comma-separated field (platforms, tags).
+function splitList(list: string | null): string[] {
+  return (list ?? '')
     .split(',')
     .map((name) => name.trim())
     .filter(Boolean)
 }
 
+// Every tag in use, suggested by the tags field.
+function tagNames(items: Item[]): string[] {
+  return [...new Set(items.flatMap((item) => splitList(item.tags)))].sort((a, b) =>
+    a.localeCompare(b),
+  )
+}
+
+// Start and finish dates are YYYY-MM-DD, which `new Date` reads as UTC midnight.
 const dateFormat = new Intl.DateTimeFormat('en-GB', {
   day: 'numeric',
   month: 'short',
   year: 'numeric',
+  timeZone: 'UTC',
 })
 
 interface Filter {
@@ -77,6 +107,8 @@ interface Filter {
   q?: string
   sort?: string
   dir?: string
+  favorite?: string
+  tag?: string
 }
 
 function homeHref(filter: Filter): string {
@@ -150,7 +182,7 @@ interface HomeProps extends Required<Filter> {
 
 export function HomePage(handle: Handle<HomeProps>) {
   return () => {
-    let { user, items, franchises, status, type, franchise, view, q } = handle.props
+    let { user, items, franchises, status, type, franchise, view, q, favorite, tag } = handle.props
     let sort: Sort = handle.props.sort in SORTS ? (handle.props.sort as Sort) : ''
     // Franchises read A to Z and releases oldest first by default; rankings
     // start from the top.
@@ -160,13 +192,15 @@ export function HomePage(handle: Handle<HomeProps>) {
         : sort === '' || sort === 'released'
           ? 'asc'
           : 'desc'
-    let filter = { status, type, franchise, view, q, sort, dir: handle.props.dir }
+    let filter = { status, type, franchise, view, q, sort, dir: handle.props.dir, favorite, tag }
     let needle = q.trim().toLowerCase()
     let shown = items.filter(
       (item) =>
         (!status || item.status === status) &&
         (!type || item.type === type) &&
         (!franchise || String(item.franchise_id) === franchise) &&
+        (!favorite || item.favorite === 1) &&
+        (!tag || splitList(item.tags).some((name) => name.toLowerCase() === tag.toLowerCase())) &&
         // The search matches the title or the franchise name.
         (!needle || `${item.title}\n${item.franchise ?? ''}`.toLowerCase().includes(needle)),
     )
@@ -190,8 +224,14 @@ export function HomePage(handle: Handle<HomeProps>) {
     let totals = Map.groupBy(items, (item) => item.franchise ?? '')
     let finished = items.filter((item) => item.status === 'finished').length
     let percent = items.length ? Math.round((finished / items.length) * 100) : 0
-    let heading = status in STATUS_LABEL ? STATUS_LABEL[status as Item['status']] : 'All titles'
+    let heading = favorite
+      ? 'Favorites'
+      : status in STATUS_LABEL
+        ? STATUS_LABEL[status as Item['status']]
+        : 'All titles'
     let activeFranchise = franchises.find((entry) => String(entry.id) === franchise)
+    // The buttons on each title post with the list filter attached (see backToList).
+    let back = homeHref(filter).slice(1)
 
     return (
       <Document title={APP}>
@@ -214,6 +254,12 @@ export function HomePage(handle: Handle<HomeProps>) {
                   <a class="chip" href={homeHref({ ...filter, q: '' })}>
                     “{q.trim()}” <span aria-hidden="true">×</span>
                     <span class="sr">Clear search</span>
+                  </a>
+                )}
+                {tag && (
+                  <a class="chip" href={homeHref({ ...filter, tag: '' })}>
+                    #{tag} <span aria-hidden="true">×</span>
+                    <span class="sr">Clear tag filter</span>
                   </a>
                 )}
               </p>
@@ -369,33 +415,97 @@ export function HomePage(handle: Handle<HomeProps>) {
                           {/* Ranked lists are not grouped, so each title names its franchise. */}
                           {sort !== '' && item.franchise && <span>{item.franchise}</span>}
                           {item.released && <span>Released {formatReleased(item.released)}</span>}
+                          {item.started_at && (
+                            <span>Started {dateFormat.format(new Date(item.started_at))}</span>
+                          )}
                           <span>
                             {STATUS_LABEL[item.status]}
                             {item.finished_at &&
                               ` · ${dateFormat.format(new Date(item.finished_at))}`}
                           </span>
+                          {item.replays > 0 && <span>Replayed ×{item.replays}</span>}
                         </small>
+                        {(item.progress_unit || item.progress_total !== null) && (
+                          <div class="track">
+                            <span>
+                              {item.progress}
+                              {item.progress_total !== null && ` / ${item.progress_total}`}
+                              {item.progress_unit && ` ${item.progress_unit}`}
+                            </span>
+                            {item.progress_total !== null && (
+                              <progress
+                                value={item.progress}
+                                max={item.progress_total}
+                                aria-label={`${item.title} progress`}
+                              />
+                            )}
+                            {item.progress_unit && item.status !== 'finished' && (
+                              // Submits the title's form (below) to the +1 action.
+                              <button
+                                type="submit"
+                                form={`item-${item.id}`}
+                                formaction={routes.itemAdvance.href({ id: item.id }) + back}
+                                class="ghost"
+                                title={`One more (${item.progress_unit})`}
+                              >
+                                +1
+                              </button>
+                            )}
+                          </div>
+                        )}
                         {item.platforms && (
                           // Cards show the first few platforms; the list view shows all.
-                          <p class="platforms" title={platformsOf(item).join(', ')}>
-                            {platformsOf(item).map((name) => (
+                          <p class="platforms" title={splitList(item.platforms).join(', ')}>
+                            {splitList(item.platforms).map((name) => (
                               <span key={name}>{name}</span>
                             ))}
-                            {platformsOf(item).length > 3 && (
-                              <span class="more">+{platformsOf(item).length - 3}</span>
+                            {splitList(item.platforms).length > 3 && (
+                              <span class="more">+{splitList(item.platforms).length - 3}</span>
                             )}
+                          </p>
+                        )}
+                        {item.tags && (
+                          <p class="tags">
+                            {splitList(item.tags).map((name) => (
+                              <a key={name} href={homeHref({ ...filter, tag: name })}>
+                                #{name}
+                              </a>
+                            ))}
                           </p>
                         )}
                         {item.description && <p class="description">{item.description}</p>}
                         {item.note && <p class="note">{item.note}</p>}
                       </div>
+                      {/* The step button submits to the form's action; the others name their own. */}
                       <form
+                        id={`item-${item.id}`}
                         method="post"
-                        action={routes.itemToggle.href({ id: item.id }) + homeHref(filter).slice(1)}
+                        action={routes.itemToggle.href({ id: item.id }) + back}
+                        class="buttons"
+                        data-rmx-reset-scroll="false"
                       >
+                        <button
+                          type="submit"
+                          formaction={routes.itemFavorite.href({ id: item.id }) + back}
+                          class="fav"
+                          aria-pressed={item.favorite === 1 ? 'true' : 'false'}
+                          title={item.favorite === 1 ? 'Remove from favorites' : 'Add to favorites'}
+                        >
+                          <span aria-hidden="true">♥</span>
+                          <span class="sr">Favorite</span>
+                        </button>
                         <button type="submit" class="ghost">
                           {NEXT_STEP[item.status]}
                         </button>
+                        {item.status === 'finished' && (
+                          <button
+                            type="submit"
+                            formaction={routes.itemReplay.href({ id: item.id }) + back}
+                            class="ghost"
+                          >
+                            Replay
+                          </button>
+                        )}
                       </form>
                     </li>
                   ))}
@@ -414,7 +524,7 @@ export function HomePage(handle: Handle<HomeProps>) {
               class="fields"
               data-rmx-document
             >
-              <ItemFields franchises={franchises} />
+              <ItemFields franchises={franchises} tags={tagNames(items)} />
               <div class="wide actions">
                 <button type="button" class="ghost" popovertarget="add" popovertargetaction="hide">
                   Cancel
@@ -460,7 +570,7 @@ export function EditPage(
                 class="fields"
                 data-rmx-document
               >
-                <ItemFields item={item} franchises={franchises} />
+                <ItemFields item={item} franchises={franchises} tags={tagNames(items)} />
               </form>
               <div class="actions split">
                 <button type="button" class="danger" popovertarget="confirm-delete">
@@ -841,7 +951,7 @@ function Shell(
 ) {
   return () => {
     let { user, items, filter, active, children } = handle.props
-    let { status } = filter
+    let { status, favorite } = filter
     let count = (value: string) => items.filter((item) => item.status === value).length
     // Filters only read as selected while the list they filter is on screen.
     let current = (selected: boolean) => (active === 'home' && selected ? 'page' : undefined)
@@ -872,7 +982,10 @@ function Shell(
           </nav>
           <nav class="filter" aria-label="Status filter">
             <h3>Status</h3>
-            <a href={homeHref({ ...filter, status: '' })} aria-current={current(!status)}>
+            <a
+              href={homeHref({ ...filter, status: '', favorite: '' })}
+              aria-current={current(!status && !favorite)}
+            >
               <i class="state all" />
               All
               <span>{items.length}</span>
@@ -880,14 +993,23 @@ function Shell(
             {STATUSES.map((value) => (
               <a
                 key={value}
-                href={homeHref({ ...filter, status: value })}
-                aria-current={current(status === value)}
+                href={homeHref({ ...filter, status: value, favorite: '' })}
+                aria-current={current(status === value && !favorite)}
               >
                 <i class={`state ${value}`} />
                 {STATUS_LABEL[value]}
                 <span>{count(value)}</span>
               </a>
             ))}
+            {/* One more choice in this list: picking it or a status clears the other. */}
+            <a
+              href={homeHref({ ...filter, status: '', favorite: '1' })}
+              aria-current={current(!!favorite)}
+            >
+              <i class="state favorite" />
+              Favorites
+              <span>{items.filter((item) => item.favorite === 1).length}</span>
+            </a>
           </nav>
           <div class="logout">
             <a class="account" href={routes.settings.href()} title="Settings">
@@ -912,9 +1034,9 @@ function escapePattern(text: string): string {
   return text.replace(/[\^$\\.*+?()[\]{}|/]/g, '\\$&')
 }
 
-function ItemFields(handle: Handle<{ item?: Item; franchises: Franchise[] }>) {
+function ItemFields(handle: Handle<{ item?: Item; franchises: Franchise[]; tags: string[] }>) {
   return () => {
-    let { item, franchises } = handle.props
+    let { item, franchises, tags } = handle.props
     return (
       <>
         <label class="wide">
@@ -959,8 +1081,44 @@ function ItemFields(handle: Handle<{ item?: Item; franchises: Franchise[] }>) {
           </select>
         </label>
         <label>
+          Rating <span class="muted">(optional · 1–10)</span>
+          <input name="rating" type="number" min={1} max={10} step={1} value={item?.rating ?? ''} />
+        </label>
+        <label>
+          Start date <span class="muted">(optional)</span>
+          <input name="started_at" type="date" value={item?.started_at ?? ''} />
+        </label>
+        <label>
           Finish date <span class="muted">(empty = today)</span>
           <input name="finished_at" type="date" value={item?.finished_at ?? ''} />
+        </label>
+        <label>
+          Progress
+          <input name="progress" type="number" min={0} step={1} value={item?.progress ?? 0} />
+        </label>
+        <label>
+          Total <span class="muted">(optional)</span>
+          <input
+            name="progress_total"
+            type="number"
+            min={1}
+            step={1}
+            value={item?.progress_total ?? ''}
+          />
+        </label>
+        <label>
+          Unit <span class="muted">(optional · adds a +1 button)</span>
+          {/* The placeholder follows the type picked above (see entry.ts). */}
+          <input
+            name="progress_unit"
+            value={item?.progress_unit ?? ''}
+            placeholder={UNIT_HINT[item?.type ?? TYPES[0]]}
+            data-hints={JSON.stringify(UNIT_HINT)}
+          />
+        </label>
+        <label>
+          Replays <span class="muted">(times through again)</span>
+          <input name="replays" type="number" min={0} step={1} value={item?.replays ?? 0} />
         </label>
         <label>
           Release date <span class="muted">(year or full date)</span>
@@ -972,9 +1130,8 @@ function ItemFields(handle: Handle<{ item?: Item; franchises: Franchise[] }>) {
             title="A year (1997), a year and month (1997-01) or a full date (1997-01-31)"
           />
         </label>
-        <label>
-          Rating <span class="muted">(optional · 1–10)</span>
-          <input name="rating" type="number" min={1} max={10} step={1} value={item?.rating ?? ''} />
+        <label class="check">
+          <input name="favorite" type="checkbox" checked={item?.favorite === 1} /> Favorite
         </label>
         <label class="wide">
           Platforms <span class="muted">(optional · separated by commas)</span>
@@ -983,6 +1140,15 @@ function ItemFields(handle: Handle<{ item?: Item; franchises: Franchise[] }>) {
             value={item?.platforms ?? ''}
             placeholder="PlayStation, Windows, Nintendo Switch"
           />
+        </label>
+        <label class="wide">
+          Tags <span class="muted">(optional · separated by commas)</span>
+          <input name="tags" value={item?.tags ?? ''} list="tag-names" placeholder="cozy, rewatch" />
+          <datalist id="tag-names">
+            {tags.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
         </label>
         <label class="wide">
           Description <span class="muted">(optional)</span>

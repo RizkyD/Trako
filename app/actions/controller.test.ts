@@ -339,4 +339,161 @@ describe('tracker', () => {
     let newName = await post(routes.loginSubmit.href(), { username: 'aku', password: 'baru-sekali-9' })
     assert.equal(newName.headers.get('Location'), routes.home.href())
   })
+
+  it('tracks statuses, start dates, progress, favorites, replays and tags', async () => {
+    // The flow above leaves this account behind; run on its own, this signs it up.
+    let cookie = cookieOf(await post(routes.loginSubmit.href(), { username: 'aku', password: 'baru-sekali-9' }))
+    let page = async (query: string) => (await get(routes.home.href() + query, cookie)).text()
+    let add = (fields: Record<string, string>) =>
+      post(routes.itemCreate.href(), { type: 'manga', status: 'planned', ...fields }, cookie)
+    // A title's id is in its edit link; `shows` checks that a page lists it.
+    let idOf = async (title: string) => /href="\/items\/(\d+)"/.exec(await page(`?q=${title}`))?.[1] ?? ''
+    let shows = (html: string, id: string) => html.includes(`href="/items/${id}"`)
+    let step = (id: string) => post(routes.itemToggle.href({ id }), {}, cookie)
+    let advance = (id: string) => post(routes.itemAdvance.href({ id }), {}, cookie)
+    let today = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(
+      new Date(),
+    )
+
+    // On hold and dropped are statuses like the others: listed, counted and filtered.
+    assert.equal((await add({ title: 'Berserk', status: 'on_hold', started_at: '2026-01-03' })).status, 302)
+    assert.equal((await add({ title: 'Bleach', status: 'dropped', favorite: 'on' })).status, 302)
+    let berserk = await idOf('Berserk')
+    let bleach = await idOf('Bleach')
+    let onHold = await page('?status=on_hold')
+    assert.match(onHold, /<h1>On hold</)
+    assert.ok(shows(onHold, berserk) && !shows(onHold, bleach))
+    assert.match(onHold, /state on_hold"><\/i>On hold<span>1<\/span>/)
+    assert.match(onHold, /state dropped"><\/i>Dropped<span>1<\/span>/)
+    assert.match(onHold, />Resume</)
+    let editForm = await (await get(routes.itemEdit.href({ id: bleach }), cookie)).text()
+    assert.match(editForm, /<option value="dropped" selected/)
+    assert.match(editForm, /name="favorite"[^>]*checked/)
+
+    // Resume brings both back in progress; a start date already set stays.
+    await step(berserk)
+    await step(bleach)
+    let resumed = await page('?status=ongoing')
+    assert.ok(shows(resumed, berserk) && shows(resumed, bleach))
+    assert.match(resumed, /Started 3 Jan 2026/)
+    assert.match(resumed, new RegExp(`Started ${today}`))
+
+    // The first start notes the day.
+    await add({ title: 'Dandadan', progress: '1', progress_total: '3', progress_unit: 'chapters' })
+    let dandadan = await idOf('Dandadan')
+    assert.doesNotMatch(await page('?q=Dandadan'), /Started /)
+    await step(dandadan)
+    assert.match(await page('?q=Dandadan'), new RegExp(`Started ${today}`))
+
+    // +1 counts up to the total and no further, back on the same filtered list.
+    let advanced = await post(routes.itemAdvance.href({ id: dandadan }) + '?status=ongoing', {}, cookie)
+    assert.equal(advanced.headers.get('Location'), '/?status=ongoing')
+    assert.match(await page('?q=Dandadan'), /2 \/ 3 chapters/)
+    for (let i = 0; i < 3; i++) await advance(dandadan)
+    let full = await page('?q=Dandadan')
+    assert.match(full, /3 \/ 3 chapters/)
+    assert.match(full, /<progress value="3" max="3"/)
+    assert.ok(full.includes(`/items/${dandadan}/advance`))
+    // Without a unit there is no +1; Berserk has none.
+    assert.doesNotMatch(await page('?q=Berserk'), /\/advance/)
+
+    // Finished titles offer Reopen and Replay, and no +1.
+    await step(dandadan)
+    let finished = await page('?q=Dandadan')
+    assert.doesNotMatch(finished, /\/advance/)
+    assert.match(finished, />Reopen</)
+    assert.ok(finished.includes(`/items/${dandadan}/replay`))
+
+    // Replay counts the run and starts over from no progress; a second post adds nothing.
+    let replayed = await post(routes.itemReplay.href({ id: dandadan }) + '?q=Dandadan', {}, cookie)
+    assert.equal(replayed.headers.get('Location'), '/?q=Dandadan')
+    await post(routes.itemReplay.href({ id: dandadan }), {}, cookie)
+    let again = await page('?status=ongoing&q=Dandadan')
+    assert.ok(shows(again, dandadan))
+    assert.match(again, /Replayed ×1/)
+    assert.match(again, /0 \/ 3 chapters/)
+    // Reopen is not a replay.
+    for (let i = 0; i < 3; i++) await advance(dandadan)
+    await step(dandadan)
+    await step(dandadan)
+    let reopened = await page('?status=ongoing&q=Dandadan')
+    assert.ok(shows(reopened, dandadan))
+    assert.match(reopened, /Replayed ×1/)
+    assert.match(reopened, /3 \/ 3 chapters/)
+
+    // The heart toggles a favorite; the Favorites filter lists only those.
+    let hearted = await post(routes.itemFavorite.href({ id: berserk }) + '?favorite=1', {}, cookie)
+    assert.equal(hearted.headers.get('Location'), '/?favorite=1')
+    let favorites = await page('?favorite=1')
+    assert.match(favorites, /<h1>Favorites</)
+    assert.ok(shows(favorites, berserk) && shows(favorites, bleach) && !shows(favorites, dandadan))
+    assert.match(favorites, /aria-pressed="true"/)
+    await post(routes.itemFavorite.href({ id: bleach }), {}, cookie)
+    let fewer = await page('?favorite=1')
+    assert.ok(shows(fewer, berserk) && !shows(fewer, bleach))
+
+    // Tags link to the list of titles with that tag (in any case); the form suggests them.
+    await post(
+      routes.itemUpdate.href({ id: bleach }),
+      { title: 'Bleach', type: 'manga', status: 'dropped', tags: 'Shonen, swords' },
+      cookie,
+    )
+    let tagged = await page('?tag=shonen')
+    assert.ok(shows(tagged, bleach) && !shows(tagged, berserk))
+    assert.match(tagged, /href="\/\?tag=swords">#swords</)
+    assert.match(tagged, /#shonen <span aria-hidden="true">×/)
+    assert.match(await page(''), /<datalist id="tag-names"><option value="Shonen"/)
+
+    // Invalid values are refused.
+    for (let [name, value] of [
+      ['status', 'paused'],
+      ['progress', '-1'],
+      ['progress', '1.5'],
+      ['progress_total', '0'],
+      ['replays', 'two'],
+      ['started_at', '3 Jan 2026'],
+    ]) {
+      assert.equal((await add({ title: 'x', [name]: value })).status, 400, `${name}=${value}`)
+    }
+
+    // Export carries the new fields, and importing the file restores them as they were.
+    let backup = await (await get(routes.export.href(), cookie)).text()
+    let entry = JSON.parse(backup).items.find((item: { title: string }) => item.title === 'Dandadan')
+    assert.equal(entry.started_at, new Date().toLocaleDateString('sv'))
+    assert.deepEqual(
+      [entry.progress, entry.progress_total, entry.progress_unit, entry.favorite, entry.replays],
+      [3, 3, 'chapters', false, 1],
+    )
+    let file = (text: string) => new File([text], 'backup.json', { type: 'application/json' })
+    let load = async (text: string, replace = false) => {
+      let response = await post(routes.import.href(), { file: file(text), ...(replace ? { replace: 'on' } : {}) }, cookie)
+      cookie = cookieOf(response) || cookie
+      return (await get(routes.settings.href(), cookie)).text()
+    }
+    assert.match(await load(backup, true), /Imported \d+ titles/)
+    let restored = await (await get(routes.export.href(), cookie)).text()
+    assert.deepEqual(JSON.parse(restored).items, JSON.parse(backup).items)
+
+    // Files from before these fields still import, with the defaults; bad values are refused.
+    let old = { title: 'Akira', type: 'film', status: 'finished', finished_at: '2020-01-01' }
+    assert.match(await load(JSON.stringify({ app: 'trako', items: [old] })), /Imported 1 titles/)
+    let akira = JSON.parse(await (await get(routes.export.href(), cookie)).text()).items.find(
+      (item: { title: string }) => item.title === 'Akira',
+    )
+    assert.deepEqual(
+      [akira.started_at, akira.progress, akira.progress_total, akira.progress_unit, akira.favorite, akira.replays, akira.tags],
+      [null, 0, null, null, false, 0, null],
+    )
+    for (let bad of [
+      { status: 'paused' },
+      { started_at: '2026-1-3' },
+      { progress: -1 },
+      { progress_total: 0 },
+      { replays: 1.5 },
+      { favorite: 'yes' },
+    ]) {
+      let text = JSON.stringify({ app: 'trako', items: [{ title: 'y', type: 'game', status: 'planned', ...bad }] })
+      assert.match(await load(text), /not a valid Trako export/, JSON.stringify(bad))
+    }
+  })
 })

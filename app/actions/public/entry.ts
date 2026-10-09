@@ -31,6 +31,16 @@ const app = run({
   }
 })
 
+// The progress unit field suggests a unit that fits the type picked in its form.
+document.addEventListener('change', (event) => {
+  let select = event.target
+  if (!(select instanceof HTMLSelectElement) || select.name !== 'type') return
+  let unit = select.form?.elements.namedItem('progress_unit')
+  if (unit instanceof HTMLInputElement && unit.dataset.hints) {
+    unit.placeholder = JSON.parse(unit.dataset.hints)[select.value] ?? ''
+  }
+})
+
 if (import.meta.hot) {
   import.meta.hot.on('server:update', async () => {
     try {

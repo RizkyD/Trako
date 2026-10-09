@@ -4,6 +4,7 @@ import { createController } from 'remix/router'
 import { assets } from '../assets.ts'
 import { coverResponse, deleteCover, saveCover } from '../covers.ts'
 import {
+  advanceItem,
   changePassword,
   changeUsername,
   createFranchise,
@@ -18,7 +19,9 @@ import {
   listItems,
   parseItem,
   renameFranchise,
+  replayItem,
   setAvatar,
+  toggleFavorite,
   toggleItem,
   updateItem,
   verifyUser,
@@ -28,6 +31,9 @@ import { exportData, importData } from '../transfer.ts'
 import { EditPage, FranchisesPage, HomePage, LoginPage, SettingsPage } from './pages.tsx'
 
 const home = () => redirect(routes.home.href())
+// The buttons on a listed title carry the active list filter in their query
+// string, so the list comes back as it was.
+const backToList = (context: { url: URL }) => redirect(routes.home.href() + context.url.search)
 // The signed-in account; every page shows it in the sidebar.
 const userOf = (context: { session: { get(key: string): unknown } }) =>
   getUser(Number(context.session.get('userId')))
@@ -90,6 +96,8 @@ export default createController(routes, {
           q={query.get('q') ?? ''}
           sort={query.get('sort') ?? ''}
           dir={query.get('dir') ?? ''}
+          favorite={query.get('favorite') ?? ''}
+          tag={query.get('tag') ?? ''}
         />,
       )
     },
@@ -133,8 +141,19 @@ export default createController(routes, {
     },
     itemToggle(context) {
       toggleItem(context.params.id)
-      // The form carries the active list filter in its query string.
-      return redirect(routes.home.href() + context.url.search)
+      return backToList(context)
+    },
+    itemAdvance(context) {
+      advanceItem(context.params.id)
+      return backToList(context)
+    },
+    itemFavorite(context) {
+      toggleFavorite(context.params.id)
+      return backToList(context)
+    },
+    itemReplay(context) {
+      replayItem(context.params.id)
+      return backToList(context)
     },
     async itemDelete(context) {
       let existing = getItem(context.params.id)

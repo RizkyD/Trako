@@ -2,7 +2,9 @@ import { deleteCover, readCover, writeCover } from './covers.ts'
 import {
   createFranchise,
   createItem,
+  DATE_PATTERN,
   db,
+  isCount,
   listFranchises,
   listItems,
   RELEASED_PATTERN,
@@ -24,6 +26,13 @@ interface ExportedItem {
   released: string | null
   platforms: string | null
   description: string | null
+  started_at: string | null
+  progress: number
+  progress_total: number | null
+  progress_unit: string | null
+  favorite: boolean
+  replays: number
+  tags: string | null
   cover: { extension: string; data: string } | null
 }
 
@@ -42,6 +51,13 @@ export async function exportData(): Promise<string> {
       released: item.released,
       platforms: item.platforms,
       description: item.description,
+      started_at: item.started_at,
+      progress: item.progress,
+      progress_total: item.progress_total,
+      progress_unit: item.progress_unit,
+      favorite: item.favorite === 1,
+      replays: item.replays,
+      tags: item.tags,
       cover: cover && { extension: cover.extension, data: cover.bytes.toString('base64') },
     })
   }
@@ -58,7 +74,8 @@ export async function exportData(): Promise<string> {
   )
 }
 
-// Checks one exported title. Returns null when anything about it is off.
+// Checks one exported title. Returns null when anything about it is off. Fields
+// that files from before them lack take their default.
 function parseExported(raw: unknown): ExportedItem | null {
   if (typeof raw !== 'object' || raw === null) return null
   let entry = raw as Record<string, unknown>
@@ -70,10 +87,19 @@ function parseExported(raw: unknown): ExportedItem | null {
   let finishedAt = text(entry.finished_at)
   let rating = (entry.rating ?? null) as number | null
   if (!title || !TYPES.includes(type) || !STATUSES.includes(status)) return null
-  if (finishedAt && !/^\d{4}-\d{2}-\d{2}$/.test(finishedAt)) return null
+  if (finishedAt && !DATE_PATTERN.test(finishedAt)) return null
   if (rating !== null && !(Number.isInteger(rating) && rating >= 1 && rating <= 10)) return null
   let released = text(entry.released)
   if (released && !RELEASED_PATTERN.test(released)) return null
+  let startedAt = text(entry.started_at)
+  if (startedAt && !DATE_PATTERN.test(startedAt)) return null
+  let progress = (entry.progress ?? 0) as number
+  let progressTotal = (entry.progress_total ?? null) as number | null
+  let replays = (entry.replays ?? 0) as number
+  if (!isCount(progress) || !isCount(replays)) return null
+  if (progressTotal !== null && !isCount(progressTotal, 1)) return null
+  let favorite = entry.favorite ?? false
+  if (typeof favorite !== 'boolean') return null
 
   let cover: ExportedItem['cover'] = null
   if (entry.cover != null) {
@@ -94,6 +120,13 @@ function parseExported(raw: unknown): ExportedItem | null {
     released,
     platforms: text(entry.platforms),
     description: text(entry.description),
+    started_at: startedAt,
+    progress,
+    progress_total: progressTotal,
+    progress_unit: text(entry.progress_unit),
+    favorite,
+    replays,
+    tags: text(entry.tags),
   }
 }
 
@@ -139,7 +172,7 @@ export async function importData(
     let cover = entry.cover
       ? await writeCover(Buffer.from(entry.cover.data, 'base64'), entry.cover.extension)
       : null
-    createItem({ ...entry, franchise_id: franchise?.id ?? null }, cover)
+    createItem({ ...entry, franchise_id: franchise?.id ?? null, favorite: entry.favorite ? 1 : 0 }, cover)
     added++
   }
   return { added, skipped: entries.length - added }

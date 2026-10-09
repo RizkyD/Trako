@@ -20,6 +20,8 @@
   --planned: light-dark(#d99a00, #ffd447);
   --ongoing: light-dark(#0aa3d6, #55d6ff);
   --finished: light-dark(#12a865, #5fe3a1);
+  --hold: var(--accent-2);
+  --dropped: var(--muted);
   --game: light-dark(#7c3aed, #b69cff);
   --manga: light-dark(#e2680e, #ffb26b);
   --novel: light-dark(#8a6a2b, #e0c489);
@@ -437,6 +439,29 @@ header.page p {
 .state.finished::before {
   content: '✓';
 }
+/* On hold: a ring around pause bars. Dropped: a ring struck through. */
+.state.on_hold {
+  --c: var(--hold);
+}
+.state.on_hold::before {
+  content: '';
+  width: 0.65em;
+  height: 0.75em;
+  border-inline: 0.22em solid var(--c);
+}
+.state.dropped {
+  --c: var(--dropped);
+  background: linear-gradient(45deg, transparent 42%, var(--c) 42% 58%, transparent 58%);
+}
+.state.favorite {
+  --c: var(--accent);
+  border-color: transparent;
+}
+.state.favorite::before {
+  content: '♥';
+  font-size: 1rem;
+  color: var(--c);
+}
 aside a[aria-current] .state {
   --c: var(--ink);
 }
@@ -642,6 +667,23 @@ ul {
 .cover .state.finished {
   background: var(--finished);
 }
+.cover .state.on_hold {
+  background: var(--hold);
+}
+.cover .state.on_hold::before {
+  border-color: var(--ink);
+}
+.cover .state.dropped {
+  background: linear-gradient(45deg, var(--dropped) 42%, var(--ink) 42% 58%, var(--dropped) 58%);
+}
+/* Dropped titles fade out of the list. */
+li:has(.state.dropped) .cover {
+  filter: grayscale(1);
+  opacity: 0.75;
+}
+li:has(.state.dropped) .title > a {
+  color: var(--muted);
+}
 
 /* Grid view: one card per title */
 ul.grid {
@@ -672,9 +714,6 @@ ul.grid {
   display: grid;
   justify-items: start;
   gap: 0.3rem;
-}
-.grid .title small > span {
-  margin-right: 0.6rem;
 }
 .platforms {
   display: flex;
@@ -717,8 +756,95 @@ ul.grid {
   -webkit-line-clamp: 2;
   overflow: hidden;
 }
-.grid li button {
-  width: 100%;
+/* Progress inside a title: the count, its +1 button, a thin bar once the total is known */
+.track {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.track button {
+  padding: 0 0.5rem;
+  font-size: 0.75rem;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+/* With a bar, the count gets its own row and the bar shares the next with +1. */
+.track:has(progress) > span {
+  flex-basis: 100%;
+}
+.track progress {
+  flex: 1;
+  height: 8px;
+  border-width: 1.5px;
+}
+.track progress::-webkit-progress-value {
+  background: var(--ongoing);
+}
+.track progress::-moz-progress-bar {
+  background: var(--ongoing);
+}
+/* Tags (the user's own; .tag is the type chip): each links to its filtered list */
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.tags a {
+  padding: 0 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: var(--accent-2);
+  background: color-mix(in srgb, var(--accent-2) 14%, transparent);
+  border-radius: 999px;
+}
+.tags a:hover {
+  color: var(--ink);
+  background: var(--sun);
+}
+/* A title's buttons: the next step, Replay, and the favorite heart */
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.grid .buttons button {
+  flex: 1;
+}
+.fav {
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--muted);
+  border-radius: 50%;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+.fav[aria-pressed='true'] {
+  color: var(--ink);
+  background: var(--accent);
+  border-color: var(--ink);
+}
+/* On cards the heart sits on the cover's corner, opposite the status mark. */
+.grid li {
+  position: relative;
+}
+.grid .fav {
+  position: absolute;
+  top: -0.55rem;
+  right: -0.55rem;
+}
+/* With a mouse, an unset heart waits until its card is pointed at or focused. */
+@media (hover: hover) {
+  .grid li:not(:hover, :focus-within) .fav[aria-pressed='false'] {
+    opacity: 0;
+  }
 }
 
 /* List view: one row per title */
@@ -747,6 +873,12 @@ ul.grid {
 .list .cover .state {
   transform: scale(0.8);
 }
+/* A row's facts wrap onto the next line as wholes. */
+.list .title small {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
 .list li > button,
 .list li > form {
   align-self: center;
@@ -771,6 +903,9 @@ ul.grid {
 }
 .title small {
   font-size: 0.8rem;
+}
+.title small > span {
+  margin-right: 0.6rem;
 }
 .title small a {
   text-decoration: underline;
