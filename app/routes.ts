@@ -1,0 +1,25 @@
+import { get, post, route } from 'remix/routes'
+
+export const routes = route({
+  assets: get('/assets/*path'),
+  covers: get('/covers/:file'),
+  home: get('/'),
+  login: get('/login'),
+  loginSubmit: post('/login'),
+  logout: post('/logout'),
+  itemCreate: post('/items'),
+  itemEdit: get('/items/:id'),
+  itemUpdate: post('/items/:id'),
+  itemToggle: post('/items/:id/toggle'),
+  itemDelete: post('/items/:id/delete'),
+  franchises: get('/franchises'),
+  franchiseCreate: post('/franchises'),
+  franchiseUpdate: post('/franchises/:id'),
+  franchiseDelete: post('/franchises/:id/delete'),
+  settings: get('/settings'),
+  avatarChange: post('/settings/avatar'),
+  usernameChange: post('/settings/username'),
+  passwordChange: post('/settings/password'),
+  export: get('/export'),
+  import: post('/import'),
+})
