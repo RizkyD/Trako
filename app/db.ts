@@ -408,6 +408,6 @@ export function deleteItem(id: string): void {
   db.prepare('DELETE FROM items WHERE id = ?').run(id)
 }
 
-function today(): string {
+export function today(): string {
   return new Date().toLocaleDateString('sv') // YYYY-MM-DD in local time
 }

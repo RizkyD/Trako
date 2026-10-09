@@ -98,6 +98,8 @@ export default createController(routes, {
           dir={query.get('dir') ?? ''}
           favorite={query.get('favorite') ?? ''}
           tag={query.get('tag') ?? ''}
+          platform={query.get('platform') ?? ''}
+          rating={query.get('rating') ?? ''}
         />,
       )
     },

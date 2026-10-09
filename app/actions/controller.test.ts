@@ -496,4 +496,143 @@ describe('tracker', () => {
       assert.match(await load(text), /not a valid Trako export/, JSON.stringify(bad))
     }
   })
+
+  it('browses upcoming releases, a timeline, wider search, platform and rating filters', async () => {
+    // As above: the account the first flow leaves behind, or a new one when run alone.
+    let cookie = cookieOf(await post(routes.loginSubmit.href(), { username: 'aku', password: 'baru-sekali-9' }))
+    let page = async (query: string) => (await get(routes.home.href() + query, cookie)).text()
+    // The titles a page lists, each once (an upcoming title is listed twice).
+    let titles = async (query: string) => [
+      ...new Set([...(await page(query)).matchAll(/<div class="title"><a href="\/items\/\d+">([^<]+)</g)].map((match) => match[1])),
+    ]
+    let add = (fields: Record<string, string>) =>
+      post(routes.itemCreate.href(), { type: 'game', status: 'planned', franchise: 'Trails', ...fields }, cookie)
+    // A day relative to today, in local time, as dates are stored.
+    let day = (offset: number) => {
+      let date = new Date()
+      date.setDate(date.getDate() + offset)
+      return date.toLocaleDateString('sv')
+    }
+    let later = String(new Date().getFullYear() + 2)
+
+    for (let name of ['Trails', 'Ys', 'Xanadu']) await post(routes.franchiseCreate.href(), { name }, cookie)
+    await add({
+      title: 'Trails in the Sky',
+      status: 'finished',
+      released: '2004-06-24',
+      rating: '9',
+      platforms: 'Windows, PSP',
+      tags: 'JRPG, falcom',
+      description: 'Estelle and Joshua **travel** the land.',
+    })
+    await add({
+      title: 'Trails of Cold Steel',
+      released: '2013-09',
+      rating: '7',
+      platforms: 'PlayStation 3, Vita',
+      note: 'Rean becomes a *teacher* later.',
+    })
+    await add({ title: 'Trails beyond the Horizon', released: day(10), platforms: 'PlayStation 5, Windows' })
+    await add({ title: 'Trails to Come', released: later })
+    await add({ title: 'Trails of Today', released: day(0) })
+    await add({ title: 'Trails of This Month', released: day(0).slice(0, 7) })
+    await add({ title: 'Trails in Motion', type: 'anime', status: 'ongoing' })
+
+    // Titles still to come out are listed first, soonest first, with how long is left.
+    // A year or a month counts from its first day; today's releases are out.
+    let trails = await page('?q=Trails')
+    let upcoming = /<section class="group upcoming">.*?<\/section>/s.exec(trails)?.[0] ?? ''
+    assert.match(upcoming, /Trails beyond the Horizon<\/a><small><span class="tag game">game<\/span>[^<]+ · <strong>in 10 days</)
+    assert.match(upcoming, new RegExp(`Trails to Come</a><small><span class="tag game">game</span>${later} · <strong>in \\d+ months<`))
+    assert.ok(upcoming.indexOf('Trails beyond the Horizon') < upcoming.indexOf('Trails to Come'))
+    assert.doesNotMatch(upcoming, /Today|This Month|Sky|Cold Steel|Motion/)
+    // They stay in their franchise panel too.
+    assert.equal(trails.split('>Trails beyond the Horizon</a>').length, 3)
+    assert.doesNotMatch(await page('?q=Trails&type=anime'), /class="group upcoming"/)
+
+    // Franchise panels collapse: served open, as <details>. Several types get a heading each.
+    assert.match(trails, /<details open data-franchise="\d+" class="group"><summary><h2>Trails<\/h2>/)
+    assert.match(trails, /<h3 class="kind"><i class="swatch game"><\/i>Games <span>6<\/span><\/h3>/)
+    assert.ok(trails.indexOf('>Games <span>') < trails.indexOf('>Anime <span>1</span>'))
+    assert.doesNotMatch(await page('?q=Trails&type=game'), /class="kind"/)
+    // Collapse all / Expand all come with three panels or more.
+    assert.doesNotMatch(trails, /data-panels/)
+    await add({ title: 'Ys Origin', franchise: 'Ys', tags: 'falcom' })
+    await add({ title: 'Xanadu Next', franchise: 'Xanadu', tags: 'falcom' })
+    assert.match(await page('?tag=falcom'), /data-panels="collapse"[^]*data-panels="expand"/)
+
+    // The timeline: a row per release year in either direction, undated titles last.
+    // The sort is ignored (and not offered), and so are upcoming and franchise panels.
+    let years = (html: string) => [...html.matchAll(/<div class="year"><h2>(\w+)<\/h2>/g)].map((match) => match[1])
+    let dated = [...new Set(['2004', '2013', day(0).slice(0, 4), day(10).slice(0, 4), later])].sort()
+    let timeline = await page('?q=Trails&view=timeline')
+    assert.deepEqual(years(timeline), [...dated, 'Unknown'])
+    assert.deepEqual(years(await page('?q=Trails&view=timeline&sort=rating')), [...dated, 'Unknown'])
+    assert.deepEqual(years(await page('?q=Trails&view=timeline&sort=rating&dir=desc')), [...dated.reverse(), 'Unknown'])
+    assert.doesNotMatch(timeline, /aria-label="Sort by"|class="group upcoming"|<details/)
+    let rows = Object.fromEntries(timeline.split('<div class="year"><h2>').slice(1).map((row) => [row.slice(0, row.indexOf('<')), row]))
+    assert.match(rows['2004'], /Trails in the Sky/)
+    assert.doesNotMatch(rows['2004'], /Cold Steel/)
+    assert.match(rows['2013'], /Trails of Cold Steel<\/a><small><span class="tag game">game<\/span>Trails</)
+    assert.match(rows.Unknown, /Trails in Motion/)
+    assert.deepEqual(years(await page('?q=Trails&view=timeline&type=anime')), ['Unknown'])
+
+    // Search also looks through descriptions, notes, platforms and tags.
+    assert.deepEqual(await titles('?q=TRAVEL'), ['Trails in the Sky'])
+    assert.deepEqual(await titles('?q=teacher'), ['Trails of Cold Steel'])
+    assert.deepEqual(await titles('?q=vita'), ['Trails of Cold Steel'])
+    assert.deepEqual(await titles('?q=jrpg'), ['Trails in the Sky'])
+
+    // The platform filter takes a whole name in any case, offered from every
+    // platform in the list, and works along with the other filters.
+    assert.deepEqual((await titles('?platform=windows')).sort(), ['Trails beyond the Horizon', 'Trails in the Sky'])
+    assert.deepEqual(await titles('?platform=PlayStation'), [])
+    assert.deepEqual(await titles('?platform=windows&status=finished'), ['Trails in the Sky'])
+    assert.deepEqual(await titles('?platform=windows&type=anime'), [])
+    let windows = await page('?platform=windows')
+    assert.match(windows, /<option value="Vita">Vita<\/option>/)
+    assert.match(windows, /<option value="Windows" selected>Windows<\/option>/)
+
+    // The rating filter keeps titles rated at least that; other values filter nothing.
+    assert.deepEqual(await titles('?q=Trails&rating=8'), ['Trails in the Sky'])
+    assert.deepEqual((await titles('?q=Trails&rating=7')).sort(), ['Trails in the Sky', 'Trails of Cold Steel'])
+    assert.deepEqual(await titles('?rating=7&status=planned&type=game'), ['Trails of Cold Steel'])
+    assert.deepEqual(await titles('?rating=7&type=anime'), [])
+    assert.deepEqual(await titles('?q=Trails&rating=11'), await titles('?q=Trails'))
+
+    // Both show as removable chips, and the forms and buttons carry them along.
+    let both = await page('?status=finished&platform=Windows&rating=8')
+    assert.match(both, /<a href="\/\?status=finished&amp;rating=8" class="chip">Windows <span aria-hidden="true">×/)
+    assert.match(both, /<a href="\/\?status=finished&amp;platform=Windows" class="chip">Rating ≥ 8 <span aria-hidden="true">×/)
+    assert.match(
+      both,
+      /<input type="hidden" name="status" value="finished" \/><input type="hidden" name="platform" value="Windows" \/><input type="hidden" name="rating" value="8" \/><input type="search"/,
+    )
+    assert.match(both, /class="list-filters"><input type="hidden" name="status" value="finished" \/><select name="platform"/)
+    assert.match(both, /action="\/items\/\d+\/toggle\?status=finished&amp;platform=Windows&amp;rating=8"/)
+    let sky = /href="\/items\/(\d+)"/.exec(both)?.[1] ?? ''
+    let starred = await post(routes.itemFavorite.href({ id: sky }) + '?platform=Windows&rating=8', {}, cookie)
+    assert.equal(starred.headers.get('Location'), '/?platform=Windows&rating=8')
+
+    // Descriptions and notes are formatted, and anything else in them is escaped.
+    await add({
+      title: 'Formatting check',
+      franchise: '',
+      description: '**Bold** <script>alert(1)</script> [site](https://example.com/?a=1&b=2) [bad](javascript:alert(1))',
+      note: 'line one\nline two\n\n- item',
+    })
+    let formatted = await page('?q=formatting')
+    assert.match(
+      formatted,
+      /<div class="description"><p><strong>Bold<\/strong> &lt;script&gt;alert\(1\)&lt;\/script&gt; <a href="https:\/\/example\.com\/\?a=1&amp;b=2" target="_blank" rel="noopener">site<\/a> \[bad\]\(javascript:alert\(1\)\)<\/p><\/div>/,
+    )
+    assert.match(formatted, /<div class="note"><p>line one<br>line two<\/p><ul><li>item<\/li><\/ul><\/div>/)
+    assert.doesNotMatch(formatted, /<script>alert|href="javascript:/)
+    // The edit page shows them formatted too; the fields keep the text as written.
+    let id = /href="\/items\/(\d+)"/.exec(formatted)?.[1] ?? ''
+    let editPage = await (await get(routes.itemEdit.href({ id }), cookie)).text()
+    assert.match(editPage, /<div class="description"><p><strong>Bold<\/strong>/)
+    assert.match(editPage, /<textarea name="description"[^>]*>\*\*Bold\*\* &lt;script&gt;alert\(1\)&lt;\/script&gt;/)
+    assert.match(editPage, /<textarea name="note"[^>]*>line one\nline two\n\n- item<\/textarea>/)
+  })
 })

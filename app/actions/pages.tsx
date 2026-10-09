@@ -1,10 +1,12 @@
-import type { Handle, RemixNode } from 'remix/component'
+import { Fragment, unsafeHTML, type Handle, type RemixNode } from 'remix/component'
 
 import { COVER_ACCEPT } from '../covers.ts'
-import { STATUSES, TYPES, type Franchise, type Item, type User } from '../db.ts'
+import { STATUSES, TYPES, today, type Franchise, type Item, type User } from '../db.ts'
+import { markdown } from '../markdown.ts'
 import { routes } from '../routes.ts'
 import { Document } from './document.tsx'
 import { FranchiseSelect } from './public/franchise-select.tsx'
+import { ListFilters } from './public/list-filters.tsx'
 import { SearchBox } from './public/search-box.tsx'
 import { ThemePicker } from './public/theme-toggle.tsx'
 
@@ -32,6 +34,19 @@ const UNIT_HINT: Record<Item['type'], string> = {
   series: 'episodes',
   anime: 'episodes',
 }
+// Headings for the types inside a franchise that holds more than one.
+const TYPE_PLURAL: Record<Item['type'], string> = {
+  game: 'Games',
+  manga: 'Manga',
+  novel: 'Novels',
+  film: 'Films',
+  series: 'Series',
+  anime: 'Anime',
+}
+
+// Cards, rows, or one row of compact cards per release year.
+const VIEWS = { '': 'Grid', list: 'List', timeline: 'Timeline' }
+type View = keyof typeof VIEWS
 
 // Sort orders. The default groups titles by franchise; the others rank every
 // shown title in one flat list.
@@ -76,6 +91,18 @@ function formatReleased(released: string): string {
   })
 }
 
+// The day a release date starts: a year or a month counts from its first day.
+const firstDay = (released: string) => `${released}-01-01`.slice(0, 10)
+
+const relative = new Intl.RelativeTimeFormat('en')
+// "in 12 days" or "in 3 months", from today (YYYY-MM-DD) to a later release.
+function untilRelease(released: string, today: string): string {
+  let days = (Date.parse(firstDay(released)) - Date.parse(today)) / 86_400_000
+  return days < 31
+    ? relative.format(days, 'day')
+    : relative.format(Math.round(days / 30.44), 'month')
+}
+
 // Names from a comma-separated field (platforms, tags).
 function splitList(list: string | null): string[] {
   return (list ?? '')
@@ -84,9 +111,14 @@ function splitList(list: string | null): string[] {
     .filter(Boolean)
 }
 
-// Every tag in use, suggested by the tags field.
-function tagNames(items: Item[]): string[] {
-  return [...new Set(items.flatMap((item) => splitList(item.tags)))].sort((a, b) =>
+// Whether a comma-separated field holds a name, in any case.
+const inList = (list: string | null, name: string) =>
+  splitList(list).some((entry) => entry.toLowerCase() === name.toLowerCase())
+
+// Every name in use in a comma-separated field, A to Z: the tags field
+// suggests them, the platform filter offers them.
+function namesIn(items: Item[], field: 'tags' | 'platforms'): string[] {
+  return [...new Set(items.flatMap((item) => splitList(item[field])))].sort((a, b) =>
     a.localeCompare(b),
   )
 }
@@ -109,6 +141,9 @@ interface Filter {
   dir?: string
   favorite?: string
   tag?: string
+  platform?: string
+  // The lowest rating shown, 1 to 10.
+  rating?: string
 }
 
 function homeHref(filter: Filter): string {
@@ -118,6 +153,10 @@ function homeHref(filter: Filter): string {
   }
   return `${routes.home.href()}?${query}`
 }
+
+// The active filters, as the hidden fields a filter form resubmits.
+const activeFilters = (filter: Filter) =>
+  Object.fromEntries(Object.entries(filter).filter(([, value]) => value))
 
 function Brand() {
   return () => (
@@ -182,17 +221,35 @@ interface HomeProps extends Required<Filter> {
 
 export function HomePage(handle: Handle<HomeProps>) {
   return () => {
-    let { user, items, franchises, status, type, franchise, view, q, favorite, tag } = handle.props
-    let sort: Sort = handle.props.sort in SORTS ? (handle.props.sort as Sort) : ''
+    let { user, items, franchises, status, type, franchise, q, favorite, tag, platform } =
+      handle.props
+    let sort: Sort = Object.hasOwn(SORTS, handle.props.sort) ? (handle.props.sort as Sort) : ''
+    let view: View = Object.hasOwn(VIEWS, handle.props.view) ? (handle.props.view as View) : ''
+    let timeline = view === 'timeline'
     // Franchises read A to Z and releases oldest first by default; rankings
-    // start from the top.
+    // start from the top. The timeline ignores the sort: it is release order.
     let direction: Direction =
       handle.props.dir === 'asc' || handle.props.dir === 'desc'
         ? handle.props.dir
-        : sort === '' || sort === 'released'
+        : timeline || sort === '' || sort === 'released'
           ? 'asc'
           : 'desc'
-    let filter = { status, type, franchise, view, q, sort, dir: handle.props.dir, favorite, tag }
+    // A minimum rating is 1 to 10; anything else filters nothing.
+    let minRating = /^([1-9]|10)$/.test(handle.props.rating) ? Number(handle.props.rating) : 0
+    let rating = minRating ? String(minRating) : ''
+    let filter = {
+      status,
+      type,
+      franchise,
+      view,
+      q,
+      sort,
+      dir: handle.props.dir,
+      favorite,
+      tag,
+      platform,
+      rating,
+    }
     let needle = q.trim().toLowerCase()
     let shown = items.filter(
       (item) =>
@@ -200,12 +257,25 @@ export function HomePage(handle: Handle<HomeProps>) {
         (!type || item.type === type) &&
         (!franchise || String(item.franchise_id) === franchise) &&
         (!favorite || item.favorite === 1) &&
-        (!tag || splitList(item.tags).some((name) => name.toLowerCase() === tag.toLowerCase())) &&
-        // The search matches the title or the franchise name.
-        (!needle || `${item.title}\n${item.franchise ?? ''}`.toLowerCase().includes(needle)),
+        (!tag || inList(item.tags, tag)) &&
+        (!platform || inList(item.platforms, platform)) &&
+        (item.rating ?? 0) >= minRating &&
+        // The search looks through the title, franchise, description, notes,
+        // platforms and tags.
+        (!needle ||
+          [item.title, item.franchise, item.description, item.note, item.platforms, item.tags]
+            .join('\n')
+            .toLowerCase()
+            .includes(needle)),
     )
     let groups: Map<string, Item[]>
-    if (sort === '') {
+    if (timeline) {
+      // One row per release year, then the undated titles.
+      groups = Map.groupBy(
+        rank(shown, 'released', direction),
+        (item) => item.released?.slice(0, 4) ?? 'Unknown',
+      )
+    } else if (sort === '') {
       // Items arrive ordered by franchise name, with franchise-less ones last.
       // Those stand on their own after the franchise panels, under the empty name.
       let named = Map.groupBy(
@@ -232,6 +302,131 @@ export function HomePage(handle: Handle<HomeProps>) {
     let activeFranchise = franchises.find((entry) => String(entry.id) === franchise)
     // The buttons on each title post with the list filter attached (see backToList).
     let back = homeHref(filter).slice(1)
+    // Shown titles still to come out, soonest first. The timeline has them in place.
+    let day = today()
+    let upcoming = timeline
+      ? []
+      : rank(
+          shown.filter((item) => item.released && firstDay(item.released) > day),
+          'released',
+          'asc',
+        )
+    // Franchise panels collapse; with a few of them, all at once too.
+    let panels = timeline || sort !== '' ? 0 : [...groups.keys()].filter(Boolean).length
+
+    let card = (item: Item) => (
+      <li key={item.id}>
+        <Cover item={item} />
+        <div class="title">
+          <a href={routes.itemEdit.href({ id: item.id })}>{item.title}</a>
+          <small>
+            <span>
+              <span class={`tag ${item.type}`}>{item.type}</span>
+              {item.rating && (
+                <span class="rating" title={`Rated ${item.rating} out of 10`}>
+                  ★ {item.rating}
+                </span>
+              )}
+            </span>
+            {/* Ranked lists are not grouped, so each title names its franchise. */}
+            {sort !== '' && item.franchise && <span>{item.franchise}</span>}
+            {item.released && <span>Released {formatReleased(item.released)}</span>}
+            {item.started_at && (
+              <span>Started {dateFormat.format(new Date(item.started_at))}</span>
+            )}
+            <span>
+              {STATUS_LABEL[item.status]}
+              {item.finished_at && ` · ${dateFormat.format(new Date(item.finished_at))}`}
+            </span>
+            {item.replays > 0 && <span>Replayed ×{item.replays}</span>}
+          </small>
+          {(item.progress_unit || item.progress_total !== null) && (
+            <div class="track">
+              <span>
+                {item.progress}
+                {item.progress_total !== null && ` / ${item.progress_total}`}
+                {item.progress_unit && ` ${item.progress_unit}`}
+              </span>
+              {item.progress_total !== null && (
+                <progress
+                  value={item.progress}
+                  max={item.progress_total}
+                  aria-label={`${item.title} progress`}
+                />
+              )}
+              {item.progress_unit && item.status !== 'finished' && (
+                // Submits the title's form (below) to the +1 action.
+                <button
+                  type="submit"
+                  form={`item-${item.id}`}
+                  formaction={routes.itemAdvance.href({ id: item.id }) + back}
+                  class="ghost"
+                  title={`One more (${item.progress_unit})`}
+                >
+                  +1
+                </button>
+              )}
+            </div>
+          )}
+          {item.platforms && (
+            // Cards show the first few platforms; the list view shows all.
+            <p class="platforms" title={splitList(item.platforms).join(', ')}>
+              {splitList(item.platforms).map((name) => (
+                <span key={name}>{name}</span>
+              ))}
+              {splitList(item.platforms).length > 3 && (
+                <span class="more">+{splitList(item.platforms).length - 3}</span>
+              )}
+            </p>
+          )}
+          {item.tags && (
+            <p class="tags">
+              {splitList(item.tags).map((name) => (
+                <a key={name} href={homeHref({ ...filter, tag: name })}>
+                  #{name}
+                </a>
+              ))}
+            </p>
+          )}
+          <Formatted class="description" text={item.description} />
+          <Formatted class="note" text={item.note} />
+        </div>
+        {/* The step button submits to the form's action; the others name their own. */}
+        <form
+          id={`item-${item.id}`}
+          method="post"
+          action={routes.itemToggle.href({ id: item.id }) + back}
+          class="buttons"
+          data-rmx-reset-scroll="false"
+        >
+          <button
+            type="submit"
+            formaction={routes.itemFavorite.href({ id: item.id }) + back}
+            class="fav"
+            aria-pressed={item.favorite === 1 ? 'true' : 'false'}
+            title={item.favorite === 1 ? 'Remove from favorites' : 'Add to favorites'}
+          >
+            <span aria-hidden="true">♥</span>
+            <span class="sr">Favorite</span>
+          </button>
+          <button type="submit" class="ghost">
+            {NEXT_STEP[item.status]}
+          </button>
+          {item.status === 'finished' && (
+            <button
+              type="submit"
+              formaction={routes.itemReplay.href({ id: item.id }) + back}
+              class="ghost"
+            >
+              Replay
+            </button>
+          )}
+        </form>
+      </li>
+    )
+    let list = (entries: Item[]) => (
+      <ul class={view === 'list' ? 'list' : 'grid'}>{entries.map(card)}</ul>
+    )
 
     return (
       <Document title={APP}>
@@ -262,6 +457,18 @@ export function HomePage(handle: Handle<HomeProps>) {
                     <span class="sr">Clear tag filter</span>
                   </a>
                 )}
+                {platform && (
+                  <a class="chip" href={homeHref({ ...filter, platform: '' })}>
+                    {platform} <span aria-hidden="true">×</span>
+                    <span class="sr">Clear platform filter</span>
+                  </a>
+                )}
+                {rating && (
+                  <a class="chip" href={homeHref({ ...filter, rating: '' })}>
+                    Rating ≥ {rating} <span aria-hidden="true">×</span>
+                    <span class="sr">Clear rating filter</span>
+                  </a>
+                )}
               </p>
             </div>
             <button type="button" class="primary" popovertarget="add">
@@ -270,25 +477,22 @@ export function HomePage(handle: Handle<HomeProps>) {
           </header>
 
           <div class="toolbar">
-            <SearchBox
-              action={routes.home.href()}
-              q={q}
-              hidden={Object.fromEntries(
-                Object.entries({ ...filter, q: '' }).filter(([, value]) => value),
-              )}
-            />
-            <nav class="segmented" aria-label="Sort by">
-              {(Object.keys(SORTS) as Sort[]).map((value) => (
-                <a
-                  key={value}
-                  // Switching the sort goes back to that sort's default direction.
-                  href={homeHref({ ...filter, sort: value, dir: '' })}
-                  aria-current={sort === value ? 'true' : undefined}
-                >
-                  {SORTS[value].label}
-                </a>
-              ))}
-            </nav>
+            <SearchBox action={routes.home.href()} q={q} hidden={activeFilters({ ...filter, q: '' })} />
+            {/* The timeline is always in release order. */}
+            {!timeline && (
+              <nav class="segmented" aria-label="Sort by">
+                {(Object.keys(SORTS) as Sort[]).map((value) => (
+                  <a
+                    key={value}
+                    // Switching the sort goes back to that sort's default direction.
+                    href={homeHref({ ...filter, sort: value, dir: '' })}
+                    aria-current={sort === value ? 'true' : undefined}
+                  >
+                    {SORTS[value].label}
+                  </a>
+                ))}
+              </nav>
+            )}
             <nav class="segmented" aria-label="Sort direction">
               <a
                 href={homeHref({ ...filter, dir: 'asc' })}
@@ -306,22 +510,19 @@ export function HomePage(handle: Handle<HomeProps>) {
               </a>
             </nav>
             <nav class="segmented" aria-label="View">
-              <a
-                href={homeHref({ ...filter, view: '' })}
-                aria-current={view !== 'list' ? 'true' : undefined}
-              >
-                Grid
-              </a>
-              <a
-                href={homeHref({ ...filter, view: 'list' })}
-                aria-current={view === 'list' ? 'true' : undefined}
-              >
-                List
-              </a>
+              {(Object.keys(VIEWS) as View[]).map((value) => (
+                <a
+                  key={value}
+                  href={homeHref({ ...filter, view: value })}
+                  aria-current={view === value ? 'true' : undefined}
+                >
+                  {VIEWS[value]}
+                </a>
+              ))}
             </nav>
           </div>
 
-          <nav class="types" aria-label="Type filter">
+          <nav class="types" aria-label="Filters">
             <a href={homeHref({ ...filter, type: '' })} aria-current={!type ? 'true' : undefined}>
               All types
               <span>{items.length}</span>
@@ -337,6 +538,13 @@ export function HomePage(handle: Handle<HomeProps>) {
                 <span>{items.filter((item) => item.type === value).length}</span>
               </a>
             ))}
+            <ListFilters
+              action={routes.home.href()}
+              platforms={namesIn(items, 'platforms')}
+              platform={platform}
+              rating={rating}
+              hidden={activeFilters({ ...filter, platform: '', rating: '' })}
+            />
           </nav>
 
           {items.length > 0 && (
@@ -351,6 +559,37 @@ export function HomePage(handle: Handle<HomeProps>) {
             </div>
           )}
 
+          {upcoming.length > 0 && (
+            <section class="group upcoming">
+              <header>
+                <h2>Upcoming</h2>
+                <span class="pill">
+                  {upcoming.length} {upcoming.length === 1 ? 'title' : 'titles'}
+                </span>
+              </header>
+              <ul class="compact">
+                {upcoming.map((item) => (
+                  <Compact key={item.id} item={item}>
+                    {formatReleased(item.released ?? '')} ·{' '}
+                    <strong>{untilRelease(item.released ?? '', day)}</strong>
+                  </Compact>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {panels >= 3 && (
+            // These need JavaScript (see entry.ts); without it the CSS hides them.
+            <div class="segmented panel-toggles" role="group" aria-label="Franchise panels">
+              <button type="button" data-panels="collapse">
+                Collapse all
+              </button>
+              <button type="button" data-panels="expand">
+                Expand all
+              </button>
+            </div>
+          )}
+
           {shown.length === 0 && (
             <div class="empty">
               <i class="logo" />
@@ -362,157 +601,73 @@ export function HomePage(handle: Handle<HomeProps>) {
             </div>
           )}
 
-          {[...groups].map(([name, entries]) => {
-            let all = totals.get(name) ?? []
-            let done = all.filter((item) => item.status === 'finished').length
-            return (
-              <section
-                key={name}
-                class={name ? 'group' : 'group loose'}
-                aria-label={name ? undefined : 'Titles without a franchise'}
-              >
-                {name && (
-                  <header>
-                    <h2>{name}</h2>
-                    {sort === '' ? (
-                      <>
-                        <span class="pill">
-                          {done}/{all.length} finished
-                        </span>
-                        <progress value={done} max={all.length} aria-label={`${name} progress`} />
-                      </>
-                    ) : (
+          {timeline && shown.length > 0 && (
+            <section class="group timeline" aria-label="Timeline by release year">
+              {[...groups].map(([year, entries]) => (
+                <div key={year} class="year">
+                  <h2>{year}</h2>
+                  <ul class="compact">
+                    {entries.map((item) => (
+                      <Compact key={item.id} item={item}>
+                        {item.franchise}
+                      </Compact>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </section>
+          )}
+
+          {!timeline &&
+            [...groups].map(([name, entries]) => {
+              if (!name) {
+                return (
+                  <section key="" class="group loose" aria-label="Titles without a franchise">
+                    {list(entries)}
+                  </section>
+                )
+              }
+              if (sort !== '') {
+                return (
+                  <section key={name} class="group">
+                    <header>
+                      <h2>{name}</h2>
                       <span class="pill">{entries.length} ranked</span>
-                    )}
-                  </header>
-                )}
-                <ul class={view === 'list' ? 'list' : 'grid'}>
-                  {entries.map((item) => (
-                    <li key={item.id}>
-                      <a class={`cover ${item.type}`} href={routes.itemEdit.href({ id: item.id })}>
-                        {item.cover ? (
-                          <img
-                            src={routes.covers.href({ file: item.cover })}
-                            alt=""
-                            loading="lazy"
-                          />
-                        ) : (
-                          <span aria-hidden="true">{item.title.slice(0, 1)}</span>
-                        )}
-                        <i class={`state ${item.status}`} title={STATUS_LABEL[item.status]} />
-                      </a>
-                      <div class="title">
-                        <a href={routes.itemEdit.href({ id: item.id })}>{item.title}</a>
-                        <small>
-                          <span>
-                            <span class={`tag ${item.type}`}>{item.type}</span>
-                            {item.rating && (
-                              <span class="rating" title={`Rated ${item.rating} out of 10`}>
-                                ★ {item.rating}
-                              </span>
-                            )}
-                          </span>
-                          {/* Ranked lists are not grouped, so each title names its franchise. */}
-                          {sort !== '' && item.franchise && <span>{item.franchise}</span>}
-                          {item.released && <span>Released {formatReleased(item.released)}</span>}
-                          {item.started_at && (
-                            <span>Started {dateFormat.format(new Date(item.started_at))}</span>
-                          )}
-                          <span>
-                            {STATUS_LABEL[item.status]}
-                            {item.finished_at &&
-                              ` · ${dateFormat.format(new Date(item.finished_at))}`}
-                          </span>
-                          {item.replays > 0 && <span>Replayed ×{item.replays}</span>}
-                        </small>
-                        {(item.progress_unit || item.progress_total !== null) && (
-                          <div class="track">
-                            <span>
-                              {item.progress}
-                              {item.progress_total !== null && ` / ${item.progress_total}`}
-                              {item.progress_unit && ` ${item.progress_unit}`}
-                            </span>
-                            {item.progress_total !== null && (
-                              <progress
-                                value={item.progress}
-                                max={item.progress_total}
-                                aria-label={`${item.title} progress`}
-                              />
-                            )}
-                            {item.progress_unit && item.status !== 'finished' && (
-                              // Submits the title's form (below) to the +1 action.
-                              <button
-                                type="submit"
-                                form={`item-${item.id}`}
-                                formaction={routes.itemAdvance.href({ id: item.id }) + back}
-                                class="ghost"
-                                title={`One more (${item.progress_unit})`}
-                              >
-                                +1
-                              </button>
-                            )}
-                          </div>
-                        )}
-                        {item.platforms && (
-                          // Cards show the first few platforms; the list view shows all.
-                          <p class="platforms" title={splitList(item.platforms).join(', ')}>
-                            {splitList(item.platforms).map((name) => (
-                              <span key={name}>{name}</span>
-                            ))}
-                            {splitList(item.platforms).length > 3 && (
-                              <span class="more">+{splitList(item.platforms).length - 3}</span>
-                            )}
-                          </p>
-                        )}
-                        {item.tags && (
-                          <p class="tags">
-                            {splitList(item.tags).map((name) => (
-                              <a key={name} href={homeHref({ ...filter, tag: name })}>
-                                #{name}
-                              </a>
-                            ))}
-                          </p>
-                        )}
-                        {item.description && <p class="description">{item.description}</p>}
-                        {item.note && <p class="note">{item.note}</p>}
-                      </div>
-                      {/* The step button submits to the form's action; the others name their own. */}
-                      <form
-                        id={`item-${item.id}`}
-                        method="post"
-                        action={routes.itemToggle.href({ id: item.id }) + back}
-                        class="buttons"
-                        data-rmx-reset-scroll="false"
-                      >
-                        <button
-                          type="submit"
-                          formaction={routes.itemFavorite.href({ id: item.id }) + back}
-                          class="fav"
-                          aria-pressed={item.favorite === 1 ? 'true' : 'false'}
-                          title={item.favorite === 1 ? 'Remove from favorites' : 'Add to favorites'}
-                        >
-                          <span aria-hidden="true">♥</span>
-                          <span class="sr">Favorite</span>
-                        </button>
-                        <button type="submit" class="ghost">
-                          {NEXT_STEP[item.status]}
-                        </button>
-                        {item.status === 'finished' && (
-                          <button
-                            type="submit"
-                            formaction={routes.itemReplay.href({ id: item.id }) + back}
-                            class="ghost"
-                          >
-                            Replay
-                          </button>
-                        )}
-                      </form>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )
-          })}
+                    </header>
+                    {list(entries)}
+                  </section>
+                )
+              }
+              let all = totals.get(name) ?? []
+              let done = all.filter((item) => item.status === 'finished').length
+              // A franchise of several types lists each type under its own heading.
+              let types = [...Map.groupBy(entries, (item) => item.type)].sort(
+                ([a], [b]) => TYPES.indexOf(a) - TYPES.indexOf(b),
+              )
+              return (
+                // Served open; entry.ts closes the ones collapsed in this browser.
+                <details key={name} class="group" open data-franchise={entries[0].franchise_id}>
+                  <summary>
+                    <h2>{name}</h2>
+                    <span class="pill">
+                      {done}/{all.length} finished
+                    </span>
+                    <progress value={done} max={all.length} aria-label={`${name} progress`} />
+                  </summary>
+                  {types.length > 1
+                    ? types.map(([value, own]) => (
+                        <Fragment key={value}>
+                          <h3 class="kind">
+                            <i class={`swatch ${value}`} />
+                            {TYPE_PLURAL[value]} <span>{own.length}</span>
+                          </h3>
+                          {list(own)}
+                        </Fragment>
+                      ))
+                    : list(entries)}
+                </details>
+              )
+            })}
 
           <div id="add" popover="auto" class="dialog">
             <h2>Add title</h2>
@@ -524,7 +679,7 @@ export function HomePage(handle: Handle<HomeProps>) {
               class="fields"
               data-rmx-document
             >
-              <ItemFields franchises={franchises} tags={tagNames(items)} />
+              <ItemFields franchises={franchises} tags={namesIn(items, 'tags')} />
               <div class="wide actions">
                 <button type="button" class="ghost" popovertarget="add" popovertargetaction="hide">
                   Cancel
@@ -557,6 +712,12 @@ export function EditPage(
               <h1>{item.title}</h1>
             </div>
           </header>
+          {(item.description || item.note) && (
+            <div class="about">
+              <Formatted class="description" text={item.description} />
+              <Formatted class="note" text={item.note} />
+            </div>
+          )}
           <div class="panel edit">
             {item.cover && (
               <img class="preview" src={routes.covers.href({ file: item.cover })} alt="Cover" />
@@ -570,7 +731,7 @@ export function EditPage(
                 class="fields"
                 data-rmx-document
               >
-                <ItemFields item={item} franchises={franchises} tags={tagNames(items)} />
+                <ItemFields item={item} franchises={franchises} tags={namesIn(items, 'tags')} />
               </form>
               <div class="actions split">
                 <button type="button" class="danger" popovertarget="confirm-delete">
@@ -922,6 +1083,52 @@ export function SettingsPage(
         </Shell>
       </Document>
     )
+  }
+}
+
+// A title's cover image, or its first letter, with the status mark on the corner.
+function Cover(handle: Handle<{ item: Item }>) {
+  return () => {
+    let { item } = handle.props
+    return (
+      <a class={`cover ${item.type}`} href={routes.itemEdit.href({ id: item.id })}>
+        {item.cover ? (
+          <img src={routes.covers.href({ file: item.cover })} alt="" loading="lazy" />
+        ) : (
+          <span aria-hidden="true">{item.title.slice(0, 1)}</span>
+        )}
+        <i class={`state ${item.status}`} title={STATUS_LABEL[item.status]} />
+      </a>
+    )
+  }
+}
+
+// A small card for the timeline and the upcoming panel: the cover beside the
+// title, its type and one more line.
+function Compact(handle: Handle<{ item: Item; children?: RemixNode }>) {
+  return () => {
+    let { item, children } = handle.props
+    return (
+      <li>
+        <Cover item={item} />
+        <div class="title">
+          <a href={routes.itemEdit.href({ id: item.id })}>{item.title}</a>
+          <small>
+            <span class={`tag ${item.type}`}>{item.type}</span>
+            {children}
+          </small>
+        </div>
+      </li>
+    )
+  }
+}
+
+// A description or note, through the little markdown formatter. The only raw
+// HTML on the pages: markdown() escapes the text before adding its own tags.
+function Formatted(handle: Handle<{ class: string; text: string | null }>) {
+  return () => {
+    let { text } = handle.props
+    return text ? <div class={handle.props.class} innerHTML={unsafeHTML(markdown(text))} /> : null
   }
 }
 
