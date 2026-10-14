@@ -8,7 +8,8 @@ const WINDOW = 15 * 60_000
 // Request; requests without one (tests) are counted per username only.
 export const clientAddress = new WeakMap<Request, string>()
 
-const failures = new Map<string, { count: number; until: number }>()
+// Exported for the tests, which start each case from none.
+export const failures = new Map<string, { count: number; until: number }>()
 
 function keysOf(request: Request, username: string): string[] {
   let address = clientAddress.get(request)

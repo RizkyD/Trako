@@ -130,4 +130,9 @@ npm run typecheck
 npm run hmr         # like dev, with live updates in the browser
 ```
 
+Tests sit next to the code they cover. `npm test` runs the `*.test.ts` files, which send
+requests through the router (helpers in `app/test-helpers.ts`); the `*.test.browser.tsx` files
+test the client components in a browser with `npm run test:browser`, which needs Playwright
+first (`npm i -D playwright`).
+
 `AGENTS.md` describes how the code is laid out.

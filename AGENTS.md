@@ -23,7 +23,8 @@ Refer to ./.agents/skills/remix/SKILL.md for the Remix mental model and how to f
 
 - `app/routes.ts` defines the shared route contract used by server and browser modules for type-safe hrefs
 - `app/router.ts` wires routes to controllers and installs the standard Remix component renderer used by actions
-- Put top-level route actions in `app/actions/controller.tsx`; add `app/actions/<route-key>/controller.tsx` for nested route maps. `app/actions/controller.test.ts` is the root controller's router smoke test
+- Put top-level route actions in `app/actions/controller.tsx`; add `app/actions/<route-key>/controller.tsx` for nested route maps
+- Tests sit next to the code they cover (`npm test`): unit tests beside their module (`app/*.test.ts`), and router tests by feature (`app/actions/*.test.ts`, `app/transfer.test.ts`) that go through `router.fetch` with the helpers in `app/test-helpers.ts`. Every file runs in its own process with its own in-memory database; `reset()` before each test keeps a file's tests independent. `app/actions/*.test.browser.tsx` test the client components and `public/enhancements.ts` in a browser (`npm run test:browser`, which needs `npm i -D playwright`)
 - `app/actions/pages.tsx` and `app/actions/document.tsx` render the Trako UI (sign in, titles, edit, franchises, stats); UI text is English
 - `app/db.ts` owns the SQLite schema (`node:sqlite`, file `data/tracker.db`), its migrations, password hashing, and item/franchise queries
 - Sessions hold the account's `session_version` from sign-in; `requireLogin` in `app/router.ts` signs out a session whose version is outdated (password change, reset, "Sign out everywhere")
@@ -35,7 +36,7 @@ Refer to ./.agents/skills/remix/SKILL.md for the Remix mental model and how to f
 - `app/importers.ts` turns MyAnimeList exports, CSV files and Steam libraries into titles for `importItems`
 - `app/lookup.ts` looks titles up on Wikipedia and AniList for the add and edit forms' "Fetch details" button (`app/actions/public/title-lookup.tsx`, route `/lookup`)
 - `app/covers.ts` stores uploaded cover images in `data/covers/` and serves them through the `covers` route; it also downloads picked covers, only from an allowlist of image hosts. The cover and profile-photo inputs (`app/actions/public/image-input.tsx`) shrink pictures in the browser before uploading them
-- `app/actions/public/` contains the browser runtime entry
+- `app/actions/public/` contains the browser runtime entry (`entry.ts`), the client components, and `enhancements.ts`, the page behaviours that need no component (remembered panels, the selection count, dialogs closing on navigation, unit hints)
 - `app/assets.ts` owns the server-side asset pipeline used by the asset route and render middleware
 - Root `public/` contains static files served unchanged from the app root: `app.css` and `theme.js` (pages link them with `?v=<mtime>`), the self-hosted fonts in `fonts/` (see `fonts/LICENSE.txt`), the web app manifest and icons, and `sw.js`, a service worker that serves fonts, styles, icons and the manifest from its cache. Fonts and icons are cached for a year, so a changed one needs a new file name; bump `VERSION` in `sw.js` when the manifest changes
 
